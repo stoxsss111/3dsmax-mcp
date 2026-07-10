@@ -61,9 +61,12 @@ Config file locations:
 
 | Client | Path |
 |--------|------|
-| Claude Desktop | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Claude Desktop (standalone) | `%APPDATA%\Claude\claude_desktop_config.json` |
+| Claude Desktop (Microsoft Store) | `%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude_desktop_config.json` |
 | Cursor | `%USERPROFILE%\.cursor\mcp.json` |
 | Gemini | `%USERPROFILE%\.gemini\settings.json` |
+
+`install.py` registers both Claude Desktop locations when the Store package folder is present.
 
 ## Tool profiles
 

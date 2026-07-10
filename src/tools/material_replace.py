@@ -99,10 +99,12 @@ def replace_material(
 def batch_replace_materials(
     replacements: DictList,
     preview: bool = False,
+    dry_run: bool = False,
 ) -> str:
     """Replace multiple materials in a single operation."""
+    preview = preview or dry_run
     if client.native_available:
-        payload = _json.dumps({"replacements": list(replacements), "preview": preview})
+        payload = _json.dumps({"replacements": list(replacements), "preview": preview, "dry_run": dry_run})
         response = client.send_command(payload, cmd_type="native:batch_replace_materials")
         return response.get("result", "{}")
 

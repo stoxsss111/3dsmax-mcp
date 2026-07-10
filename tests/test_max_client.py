@@ -4,7 +4,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from src.max_client import AmbiguousMaxInstanceError, MaxClient
+from src.max_client import AmbiguousMaxInstanceError, MaxBridgeError, MaxClient
 
 
 class MaxClientTests(unittest.TestCase):
@@ -55,6 +55,21 @@ class MaxClientTests(unittest.TestCase):
             client = MaxClient(timeout=1.0, transport="tcp")
             with self.assertRaisesRegex(RuntimeError, "Mismatched response requestId"):
                 client.send_command("x")
+
+    def test_bridge_error_is_not_runtime_error_fallback_signal(self) -> None:
+        client = MaxClient(timeout=1.0, transport="tcp")
+        payload = {
+            "success": False,
+            "requestId": "req",
+            "error": '{"type":"NativeError","message":"Ambiguous","code":"AMBIGUOUS","retryable":false}',
+            "meta": {},
+        }
+
+        with self.assertRaises(MaxBridgeError) as raised:
+            client._parse_response(json.dumps(payload).encode("utf-8"), "req", 0.0)
+
+        self.assertNotIsInstance(raised.exception, RuntimeError)
+        self.assertEqual(raised.exception.bridge_response["error"], payload["error"])
 
     def test_resolve_pipe_uses_active_instance_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

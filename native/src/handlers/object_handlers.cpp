@@ -16,17 +16,14 @@ using namespace HandlerHelpers;
 std::string NativeHandlers::GetObjectProperties(const std::string& params, MCPBridgeGUP* gup) {
     return gup->GetExecutor().ExecuteSync([&params]() -> std::string {
         json p = json::parse(params, nullptr, false);
-        std::string name = p.value("name", "");
-        if (name.empty()) throw std::runtime_error("name is required");
-
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
 
         Interface* ip = GetCOREInterface();
         TimeValue t = ip->GetTime();
 
         json result;
         result["name"] = WideToUtf8(node->GetName());
+        result["handle"] = NodeHandle(node);
 
         // Class info
         ObjectState os = node->EvalWorldState(t);
@@ -183,15 +180,12 @@ static bool ParseColor(const std::string& s, DWORD& out) {
 std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBridgeGUP* gup) {
     return gup->GetExecutor().ExecuteSync([&params]() -> std::string {
         json p = json::parse(params, nullptr, false);
-        std::string name = p.value("name", "");
         std::string prop = p.value("property", "");
         std::string value = p.value("value", "");
 
-        if (name.empty()) throw std::runtime_error("name is required");
         if (prop.empty()) throw std::runtime_error("property is required");
 
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
 
         Interface* ip = GetCOREInterface();
         TimeValue t = ip->GetTime();
@@ -199,6 +193,17 @@ std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBrid
         // Convert prop to lowercase for comparison
         std::string lprop = prop;
         std::transform(lprop.begin(), lprop.end(), lprop.begin(), ::tolower);
+
+        auto propertyResult = [&](const std::string& message) -> std::string {
+            json result = NodeIdentityJson(node);
+            result["message"] = message;
+            result["property"] = prop;
+            result["value"] = value;
+            if (lprop == "pos" || lprop == "position") {
+                result["spatial"] = SpatialSnapshot::BuildSpatialSnapshot(node, t);
+            }
+            return result.dump();
+        };
 
         // ── Node-level properties (direct SDK) ──────────────────
         if (lprop == "pos" || lprop == "position") {
@@ -208,7 +213,7 @@ std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBrid
                 tm.SetTrans(pt);
                 node->SetNodeTM(t, tm);
                 ip->RedrawViews(t);
-                return "Set pos on " + WideToUtf8(node->GetName());
+                return propertyResult("Set pos on " + WideToUtf8(node->GetName()));
             }
             throw std::runtime_error("Cannot parse Point3 from: " + value);
         }
@@ -218,7 +223,7 @@ std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBrid
             if (ParseColor(value, col)) {
                 node->SetWireColor(col);
                 ip->RedrawViews(t);
-                return "Set wirecolor on " + WideToUtf8(node->GetName());
+                return propertyResult("Set wirecolor on " + WideToUtf8(node->GetName()));
             }
             throw std::runtime_error("Cannot parse color from: " + value);
         }
@@ -229,27 +234,27 @@ std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBrid
             if (wval.size() >= 2 && wval.front() == L'"' && wval.back() == L'"')
                 wval = wval.substr(1, wval.size() - 2);
             node->SetName(wval.c_str());
-            return "Set name on " + WideToUtf8(node->GetName());
+            return propertyResult("Set name on " + WideToUtf8(node->GetName()));
         }
 
         if (lprop == "ishidden" || lprop == "hidden") {
             bool v = (value == "true" || value == "1" || value == "on");
             node->Hide(v ? TRUE : FALSE);
             ip->RedrawViews(t);
-            return "Set isHidden on " + WideToUtf8(node->GetName());
+            return propertyResult("Set isHidden on " + WideToUtf8(node->GetName()));
         }
 
         if (lprop == "isfrozen" || lprop == "frozen") {
             bool v = (value == "true" || value == "1" || value == "on");
             node->Freeze(v ? TRUE : FALSE);
             ip->RedrawViews(t);
-            return "Set isFrozen on " + WideToUtf8(node->GetName());
+            return propertyResult("Set isFrozen on " + WideToUtf8(node->GetName()));
         }
 
         if (lprop == "renderable") {
             bool v = (value == "true" || value == "1" || value == "on");
             node->SetRenderable(v ? TRUE : FALSE);
-            return "Set renderable on " + WideToUtf8(node->GetName());
+            return propertyResult("Set renderable on " + WideToUtf8(node->GetName()));
         }
 
         // ── Base object IParamBlock2 properties ─────────────────
@@ -263,7 +268,7 @@ std::string NativeHandlers::SetObjectProperty(const std::string& params, MCPBrid
         if (baseObj && SetParamByName(baseObj, prop, value, t)) {
             baseObj->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
             ip->RedrawViews(t);
-            return "Set " + prop + " on " + WideToUtf8(node->GetName());
+            return propertyResult("Set " + prop + " on " + WideToUtf8(node->GetName()));
         }
 
         throw std::runtime_error("Property not found or cannot set: " + prop);
@@ -536,26 +541,57 @@ std::string NativeHandlers::DeleteObjects(const std::string& params, MCPBridgeGU
     return gup->GetExecutor().ExecuteSync([&params]() -> std::string {
         json p = json::parse(params, nullptr, false);
         auto names = p.value("names", std::vector<std::string>{});
-        if (names.empty()) throw std::runtime_error("names is required");
+        auto handles = p.value("handles", std::vector<unsigned long long>{});
+        bool dryRun = p.value("dry_run", false);
+        if (names.empty() && handles.empty()) throw std::runtime_error("names or handles is required");
 
         Interface* ip = GetCOREInterface();
         json deleted = json::array();
         json notFound = json::array();
+        std::set<INode*> seen;
 
+        for (unsigned long long handle : handles) {
+            INode* node = FindNodeByHandle(handle);
+            if (node && seen.insert(node).second) {
+                deleted.push_back(NodeIdentityJson(node));
+                if (!dryRun) ip->DeleteNode(node);
+            } else if (!node) {
+                notFound.push_back({{"handle", handle}});
+            }
+        }
         for (const auto& name : names) {
-            INode* node = FindNodeByName(name);
-            if (node) {
-                ip->DeleteNode(node);
-                deleted.push_back(name);
-            } else {
+            std::vector<INode*> matches = CollectNodesByExactName(name);
+            if (matches.empty()) {
                 notFound.push_back(name);
+                continue;
+            }
+            if (matches.size() > 1) {
+                json candidates = json::array();
+                for (INode* candidate : matches) {
+                    candidates.push_back(NodeIdentityJson(candidate));
+                }
+                json hint = {
+                    {"message", "Pass handles to disambiguate these object names."},
+                    {"candidates", candidates},
+                };
+                throw std::runtime_error(StructuredErrorPayload(
+                    "AMBIGUOUS",
+                    "Ambiguous object name: " + name,
+                    hint));
+            }
+            INode* node = matches[0];
+            if (node && seen.insert(node).second) {
+                deleted.push_back(NodeIdentityJson(node));
+                if (!dryRun) ip->DeleteNode(node);
             }
         }
 
         json result;
-        result["deleted"] = deleted;
+        result[dryRun ? "wouldDelete" : "deleted"] = deleted;
         result["notFound"] = notFound;
-        result["message"] = "Deleted " + std::to_string(deleted.size()) + " objects";
+        result["dry_run"] = dryRun;
+        result["message"] = std::string(dryRun ? "Would delete " : "Deleted ") +
+            std::to_string(deleted.size()) + " objects";
         if (!notFound.empty()) {
             result["message"] = result["message"].get<std::string>() +
                 " | Not found: " + std::to_string(notFound.size());
@@ -568,11 +604,7 @@ std::string NativeHandlers::DeleteObjects(const std::string& params, MCPBridgeGU
 std::string NativeHandlers::TransformObject(const std::string& params, MCPBridgeGUP* gup) {
     return gup->GetExecutor().ExecuteSync([&params]() -> std::string {
         json p = json::parse(params, nullptr, false);
-        std::string name = p.value("name", "");
-        if (name.empty()) throw std::runtime_error("name is required");
-
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
 
         Interface* ip = GetCOREInterface();
         TimeValue t = ip->GetTime();
@@ -630,17 +662,17 @@ std::string NativeHandlers::TransformObject(const std::string& params, MCPBridge
         }
 
         if (!didSomething) {
-            return "No transform parameters provided.";
+            json result = NodeIdentityJson(node);
+            result["status"] = "noop";
+            result["message"] = "No transform parameters provided.";
+            return result.dump();
         }
 
         ip->RedrawViews(t);
 
-        // Return updated position
-        Matrix3 finalTM = node->GetNodeTM(t);
-        Point3 pos = finalTM.GetTrans();
-        json result;
+        json result = SpatialSnapshot::BuildSpatialSnapshot(node, t);
         result["message"] = "Transformed " + WideToUtf8(node->GetName());
-        result["position"] = json::array({pos.x, pos.y, pos.z});
+        result["coordinateSystem"] = coordSys;
         return result.dump();
     });
 }

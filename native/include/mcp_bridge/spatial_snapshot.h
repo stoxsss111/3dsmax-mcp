@@ -19,6 +19,7 @@ PosMode ParsePosMode(const std::string& mode);
 const char* PosModeToString(PosMode mode);
 
 json SpaceJson();
+json UnitsJson();
 json TypeAxisHints(const std::string& type);
 json NodeOrientationJson(INode* node, TimeValue t);
 

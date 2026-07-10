@@ -7,7 +7,7 @@
 Connect AI agents to Autodesk 3ds Max through the [Model Context Protocol](https://modelcontextprotocol.io). Ask in natural language; the agent creates objects, builds materials, inspects plugins with dedicated MCP tools instead of MAXScript/Python feedback loops.
 Built-in installer works with Cursor, Claude, Codex and Gemini.
 
-**Current release: 1.0.5** — see [CHANGELOG.md](CHANGELOG.md).
+**Current release: 1.2.0** — see [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 
@@ -33,7 +33,7 @@ uv run python install.py
 
 Restart 3ds Max, then connect your MCP client. The installer registers the server where it can; see [Advanced configuration](docs/ADVANCED.md) for manual client setup.
 
- I personally use Cursor and Codex.
+I personally use Cursor and Codex.
 
 **Update an existing install:**
 
@@ -94,6 +94,8 @@ uv run python install.py
 | Tool | Description |
 |------|-------------|
 | `get_materials` | List materials assigned in the scene |
+| `get_material_library` | Inspect `currentMaterialLibrary` and Material Editor scratch slots |
+| `backup_material_library` | Save temporary/scratch material libraries to `.mat` files |
 | `get_material_slots` | Compact slot/property readback for a material |
 | `inspect_material_network` | Semantic material graph, wired slots, texture manifest, health checks |
 | `replicate_material` | Preview/apply structure-preserving material clone and texture remap |

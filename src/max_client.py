@@ -74,6 +74,15 @@ class AmbiguousMaxInstanceError(ConnectionError):
     """Raised when multiple live Max native bridges exist and none is claimed."""
 
 
+class MaxBridgeError(Exception):
+    """Raised when the native/TCP bridge returns a structured error response."""
+
+    def __init__(self, message: str, response: dict[str, Any]) -> None:
+        self.bridge_message = message
+        self.bridge_response = response
+        super().__init__(f"MAXScript error: {message}")
+
+
 class MaxClient:
     """Client that sends commands to 3ds Max via named pipe or TCP."""
 
@@ -478,6 +487,6 @@ class MaxClient:
 
         if not response.get("success", False):
             error_msg = response.get("error", "Unknown error")
-            raise RuntimeError(f"MAXScript error: {error_msg}")
+            raise MaxBridgeError(str(error_msg), response)
 
         return response

@@ -61,7 +61,11 @@ def dispatch_query_scene(client: MaxClient, action: str, **params: object) -> st
             detail=str(params.get("detail", "full") or "full"),
             max_items=int(params.get("max_items", 50)),
         )
-    return run_delta(client, capture=bool(params.get("capture", False)))
+    return run_delta(
+        client,
+        capture=bool(params.get("capture", False)),
+        unchanged_since=int(params.get("unchanged_since", 0) or 0),
+    )
 
 
 def run_overview(client: MaxClient, max_roots: int = 50) -> str:
@@ -157,12 +161,14 @@ def run_selection(client: MaxClient, detail: str = "full", max_items: int = 50) 
     return response.get("result", "{}")
 
 
-def run_delta(client: MaxClient, capture: bool = False) -> str:
+def run_delta(client: MaxClient, capture: bool = False, unchanged_since: int = 0) -> str:
     if client.native_available:
         try:
             payload: dict[str, object] = {}
             if capture:
                 payload["capture"] = True
+            if unchanged_since > 0:
+                payload["unchanged_since"] = unchanged_since
             response = client.send_command(
                 json.dumps(payload) if payload else "",
                 cmd_type="native:scene_delta",

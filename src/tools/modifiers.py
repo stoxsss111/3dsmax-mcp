@@ -63,15 +63,21 @@ def _format_modifier_property_result(
 
 
 @mcp.tool()
-def add_modifier(name: str, modifier: str, params: str = "") -> str:
+def add_modifier(name: str = "", modifier: str = "", params: str = "", handle: int = 0) -> str:
     """Add a modifier to an object."""
     if client.native_available:
         try:
-            payload = _json.dumps({"name": name, "modifier": modifier, "params": params})
+            body = {"name": name, "modifier": modifier, "params": params}
+            if handle:
+                body["handle"] = handle
+            payload = _json.dumps(body)
             response = client.send_command(payload, cmd_type="native:add_modifier")
             return response.get("result", "")
         except RuntimeError:
             pass
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     safe = safe_string(name)
     maxscript = f"""(
@@ -93,15 +99,21 @@ def add_modifier(name: str, modifier: str, params: str = "") -> str:
 
 
 @mcp.tool()
-def remove_modifier(name: str, modifier: str) -> str:
+def remove_modifier(name: str = "", modifier: str = "", handle: int = 0) -> str:
     """Remove a modifier from an object by name."""
     if client.native_available:
         try:
-            payload = _json.dumps({"name": name, "modifier": modifier})
+            body = {"name": name, "modifier": modifier}
+            if handle:
+                body["handle"] = handle
+            payload = _json.dumps(body)
             response = client.send_command(payload, cmd_type="native:remove_modifier")
             return response.get("result", "")
         except RuntimeError:
             pass
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     safe = safe_string(name)
     safe_mod = safe_string(modifier)
@@ -130,7 +142,8 @@ def remove_modifier(name: str, modifier: str) -> str:
 
 @mcp.tool()
 def set_modifier_state(
-    name: str,
+    name: str = "",
+    handle: int = 0,
     modifier_name: str = "",
     modifier_index: int = 0,
     enabled: Optional[bool] = None,
@@ -141,6 +154,8 @@ def set_modifier_state(
     if client.native_available:
         try:
             payload = {"name": name, "modifier_name": modifier_name, "modifier_index": modifier_index}
+            if handle:
+                payload["handle"] = handle
             if enabled is not None:
                 payload["enabled"] = enabled
             if enabled_in_views is not None:
@@ -151,6 +166,9 @@ def set_modifier_state(
             return response.get("result", "")
         except RuntimeError:
             pass
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     safe = safe_string(name)
 
@@ -198,17 +216,25 @@ def set_modifier_state(
 
 @mcp.tool()
 def collapse_modifier_stack(
-    name: str,
+    name: str = "",
+    handle: int = 0,
     to_index: int = 0,
+    dry_run: bool = False,
 ) -> str:
     """Collapse the modifier stack on an object."""
     if client.native_available:
         try:
-            payload = _json.dumps({"name": name, "to_index": to_index})
+            body = {"name": name, "to_index": to_index, "dry_run": dry_run}
+            if handle:
+                body["handle"] = handle
+            payload = _json.dumps(body)
             response = client.send_command(payload, cmd_type="native:collapse_modifier_stack")
             return response.get("result", "")
         except RuntimeError:
             pass
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     safe = safe_string(name)
     if to_index > 0:
@@ -216,8 +242,8 @@ def collapse_modifier_stack(
             local obj = getNodeByName "{safe}"
             if obj != undefined then (
                 if {to_index} <= obj.modifiers.count then (
-                    maxOps.CollapseNodeTo obj {to_index} off
-                    "Collapsed " + obj.name + " to modifier index {to_index}"
+                    if not {str(dry_run).lower()} do maxOps.CollapseNodeTo obj {to_index} off
+                    (if {str(dry_run).lower()} then "Would collapse " else "Collapsed ") + obj.name + " to modifier index {to_index}"
                 ) else (
                     "Index {to_index} out of range (stack has " + (obj.modifiers.count as string) + " modifiers)"
                 )
@@ -229,8 +255,8 @@ def collapse_modifier_stack(
         maxscript = f"""(
             local obj = getNodeByName "{safe}"
             if obj != undefined then (
-                maxOps.CollapseNode obj off
-                "Collapsed entire stack on " + obj.name + " — now: " + ((classof obj.baseobject) as string)
+                if not {str(dry_run).lower()} do maxOps.CollapseNode obj off
+                (if {str(dry_run).lower()} then "Would collapse entire stack on " else "Collapsed entire stack on ") + obj.name + " — now: " + ((classof obj.baseobject) as string)
             ) else (
                 "Object not found: {safe}"
             )
@@ -240,15 +266,21 @@ def collapse_modifier_stack(
 
 
 @mcp.tool()
-def make_modifier_unique(name: str, modifier_index: int) -> str:
+def make_modifier_unique(name: str = "", modifier_index: int = 0, handle: int = 0) -> str:
     """Make an instanced modifier unique (de-instance it)."""
     if client.native_available:
         try:
-            payload = _json.dumps({"name": name, "modifier_index": modifier_index})
+            body = {"name": name, "modifier_index": modifier_index}
+            if handle:
+                body["handle"] = handle
+            payload = _json.dumps(body)
             response = client.send_command(payload, cmd_type="native:make_modifier_unique")
             return response.get("result", "")
         except RuntimeError:
             pass
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     safe = safe_string(name)
     maxscript = f"""(

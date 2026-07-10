@@ -2,6 +2,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <stdexcept>
 #include <nlohmann/json.hpp>
 #include <max.h>
 #include <maxapi.h>
@@ -13,6 +14,7 @@
 #include <INodeLayerProperties.h>
 #include <iparamb2.h>
 #include <plugapi.h>
+#include <ISceneEventManager.h>
 
 #include <maxscript/maxscript.h>
 #include <maxscript/foundation/strings.h>
@@ -63,6 +65,21 @@ inline std::string NodeLayerName(INode* node) {
     return "0";
 }
 
+inline unsigned long long NodeHandle(INode* node) {
+    if (!node) return 0ULL;
+    return static_cast<unsigned long long>(Animatable::GetHandleByAnim(node));
+}
+
+inline json NodeIdentityJson(INode* node) {
+    json out;
+    if (!node) return out;
+    out["name"] = WideToUtf8(node->GetName());
+    out["handle"] = NodeHandle(node);
+    out["class"] = NodeClassName(node);
+    out["layer"] = NodeLayerName(node);
+    return out;
+}
+
 inline json NodePosition(INode* node, TimeValue t) {
     Matrix3 tm = node->GetNodeTM(t);
     Point3 pos = tm.GetTrans();
@@ -83,11 +100,106 @@ inline void CollectNodes(INode* node, std::vector<INode*>& out) {
     }
 }
 
+inline std::vector<INode*> CollectNodesByExactName(const std::string& name) {
+    Interface* ip = GetCOREInterface();
+    INode* root = ip->GetRootNode();
+    std::vector<INode*> all, matched;
+    CollectNodes(root, all);
+    for (INode* n : all) {
+        if (WideToUtf8(n->GetName()) == name) {
+            matched.push_back(n);
+        }
+    }
+    return matched;
+}
+
 // ── Node lookup by name ─────────────────────────────────────────
 inline INode* FindNodeByName(const std::string& name) {
     Interface* ip = GetCOREInterface();
     std::wstring wname = Utf8ToWide(name);
     return ip->GetINodeByName(wname.c_str());
+}
+
+inline unsigned long long PayloadHandleValue(const json& payload, const std::string& key = "handle") {
+    auto it = payload.find(key);
+    if (it == payload.end() || it->is_null()) return 0ULL;
+    try {
+        if (it->is_number_unsigned()) return it->get<unsigned long long>();
+        if (it->is_number_integer()) {
+            long long value = it->get<long long>();
+            return value > 0 ? static_cast<unsigned long long>(value) : 0ULL;
+        }
+        // type() check instead of is_string(): MAXScript's value.h defines a
+        // function-like is_string macro that breaks the method call when this
+        // header lands after maxscript includes.
+        if (it->type() == json::value_t::string) {
+            std::string value = it->get<std::string>();
+            if (!value.empty()) return std::stoull(value);
+        }
+    } catch (...) {
+        return 0ULL;
+    }
+    return 0ULL;
+}
+
+inline INode* FindNodeByHandle(unsigned long long handle) {
+    if (handle == 0ULL) return nullptr;
+    return NodeEventNamespace::GetNodeByKey(static_cast<NodeEventNamespace::NodeKey>(handle));
+}
+
+inline std::string StructuredErrorPayload(
+    const std::string& code,
+    const std::string& message,
+    const json& hint = json()) {
+    json payload;
+    payload["type"] = "NativeError";
+    payload["message"] = message;
+    payload["code"] = code;
+    payload["retryable"] = (code == "BRIDGE_DOWN" || code == "RENDER_BUSY");
+    if (!hint.is_null() && !hint.empty()) {
+        payload["hint"] = hint;
+    }
+    return payload.dump();
+}
+
+inline INode* ResolveNodeFromPayload(
+    const json& payload,
+    const std::string& nameKey = "name",
+    const std::string& handleKey = "handle") {
+
+    const unsigned long long handle = PayloadHandleValue(payload, handleKey);
+    if (handle != 0ULL) {
+        INode* byHandle = FindNodeByHandle(handle);
+        if (!byHandle) {
+            throw std::runtime_error("Object handle not found: " + std::to_string(handle));
+        }
+        return byHandle;
+    }
+
+    const std::string name = payload.value(nameKey, "");
+    if (name.empty()) {
+        throw std::runtime_error(nameKey + " or " + handleKey + " is required");
+    }
+
+    std::vector<INode*> matches = CollectNodesByExactName(name);
+    if (matches.empty()) {
+        throw std::runtime_error("Object not found: " + name);
+    }
+    if (matches.size() > 1) {
+        json candidates = json::array();
+        for (INode* node : matches) {
+            candidates.push_back(NodeIdentityJson(node));
+        }
+        json hint = {
+            {"message", "Pass handle to disambiguate this object name."},
+            {"candidates", candidates},
+        };
+        throw std::runtime_error(StructuredErrorPayload(
+            "AMBIGUOUS",
+            "Ambiguous object name: " + name,
+            hint));
+    }
+    return matches[0];
 }
 
 // MAXScript-level wrap that captures runtime exceptions (parse errors still
@@ -148,19 +260,12 @@ inline std::string RunMAXScript(const std::string& script) {
     if (fpv.type == TYPE_FLOAT) {
         return std::to_string(fpv.f);
     }
-
-    // Fallback: wrap in string conversion
-    std::wstring wrap = L"(" + wcmd + L") as string";
-    FPValue fpv2;
-    if (ExecuteMAXScriptScript(wrap.c_str(), MAXScript::ScriptSource::NonEmbedded, TRUE, &fpv2)) {
-        if (fpv2.type == TYPE_STRING || fpv2.type == TYPE_FILENAME) {
-            return WideToUtf8(fpv2.s);
-        }
-        if (fpv2.type == TYPE_TSTR) {
-            return WideToUtf8(fpv2.tstr->data());
-        }
+    if (fpv.type == TYPE_BOOL) {
+        return fpv.i ? "true" : "false";
     }
 
+    // Never re-evaluate the script to stringify the result: scripts with side
+    // effects (e.g. "max undo") would run twice.
     return "OK";
 }
 

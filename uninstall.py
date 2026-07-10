@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import install
+
 ROOT = Path(__file__).resolve().parent
 
 MAX_DIRS = [
@@ -161,10 +163,15 @@ def main():
 
     # app configs that store mcpServers
     app_configs = [
-        ("Claude Desktop", Path(os.environ.get("APPDATA", "")) / "Claude" / "claude_desktop_config.json"),
-        ("Gemini", Path.home() / ".gemini" / "settings.json"),
-        ("Cursor", Path.home() / ".cursor" / "mcp.json"),
+        (install._claude_desktop_label(path), path)
+        for path in install.claude_desktop_config_paths()
     ]
+    app_configs.extend(
+        [
+            ("Gemini", Path.home() / ".gemini" / "settings.json"),
+            ("Cursor", Path.home() / ".cursor" / "mcp.json"),
+        ]
+    )
     for label, config_path in app_configs:
         if not config_path.exists():
             continue

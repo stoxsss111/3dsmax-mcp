@@ -3,6 +3,7 @@
 #include "mcp_bridge/llm_client.h"
 #include "mcp_bridge/native_handlers.h"
 #include "mcp_bridge/handler_helpers.h"
+#include "mcp_bridge/scene_journal.h"
 #include <maxapi.h>
 #include <notify.h>
 #include <shlobj.h>
@@ -279,6 +280,7 @@ DWORD MCPBridgeGUP::Start() {
     MCPChatUI::Init(hInstance);
 
     StartPipe();
+    SceneJournal::Register();
 
     // Init LLM client — reads %LOCALAPPDATA%\3dsmax-mcp\mcp_config.ini [llm]
     LLMClient::Init();
@@ -291,10 +293,17 @@ DWORD MCPBridgeGUP::Start() {
     // Register macroscripts after Max is fully loaded
     RegisterNotification(OnSystemStartupDone, nullptr, NOTIFY_SYSTEM_STARTUP);
 
+    // Render automation: hook NOTIFY_POST_RENDER so render_start jobs emit a
+    // filesystem done-signal at the real completion event (no polling).
+    NativeHandlers::RegisterRenderNotifications();
+
     return GUPRESULT_KEEP;
 }
 
 void MCPBridgeGUP::Stop() {
+    SceneJournal::Unregister();
+    NativeHandlers::UnregisterRenderNotifications();
+
     // Drain detached chat threads (ProcessChatMessage launches std::thread.detach()
     // per user message; they sit in WinHTTP and capture `this`) before tearing
     // down the executor and chat UI, otherwise the thread resumes into freed

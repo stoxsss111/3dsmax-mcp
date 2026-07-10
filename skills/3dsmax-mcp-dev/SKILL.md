@@ -20,7 +20,7 @@ Scene reads — use **`query_scene(action=...)`**:
 - **`get_session_context`** — bridge + capabilities + overview + selection (on demand only)
 
 Object/material/plugin inspection:
-- `inspect_object`, `inspect_properties`, `get_material_slots`, `get_materials`
+- `inspect_object`, `inspect_properties`, `get_material_slots`, `get_materials`, `get_material_library`
 - `analyze_node_orientation` — pivot, bbox, local axes, world matrix before rig/vehicle/camera transforms
 - `introspect_class`, `introspect_instance`, `introspect_osl`, `discover_plugin_classes`, `map_class_relationships` — unfamiliar plugin APIs and exact param names
 - Arnold materials such as `ai_standard_surface` may not appear in class discovery; inspect with `inspect_plugin_class` or `introspect_osl`
@@ -60,7 +60,8 @@ Debugging:
 ### Materials
 - Create + assign: `assign_material`, `create_material_from_textures`, `smart_import`, `palette_laydown`
 - Edit: `set_material_property`, `set_material_properties`
-- Inspect: `get_material_slots`, `get_materials`
+- Inspect: `get_material_slots`, `get_materials`, `get_material_library`
+- Scratch libraries: `backup_material_library` saves `currentMaterialLibrary` / `meditMaterials` to `.mat`
 - Multi/Sub: `set_sub_material`
 - Textures: `create_texture_map`, `set_texture_map_properties`
 - Dual pipeline: `create_shell_material`, `replace_material`, `batch_replace_materials`
@@ -122,7 +123,16 @@ Debugging:
 - Box: `width=X`, `length=Y`, `height=Z`.
 - `list_wireable_params` paths include `[#Parameters]` levels — pass through to `wire_params` as-is.
 - `create_shell_material`: `mcp_findMaterialByName` uses `sceneMaterials` — `getClassInstances Material` is invalid (Material is not a MAXClass).
-- `python -m src.server` runs as `__main__`; alias it to `src.server` before importing tool modules or `from ..server import mcp` creates a second empty FastMCP instance.
+- `getHandleByAnim` formats as values like `12345P`; quote it as a string when building JSON, or the result is invalid JSON.
+- MCP tripback is a structured `ToolEnvelope` dict (`ok`/`result`/`error`/`hint`), not a JSON string. Error envelopes may include `hint.suggested_tools`; tool-authored hints win over auto-hints.
+- Success JSON payloads may include `message`; classify raw structured errors by `error`, `code`, or `status=error|failed`, not by `message` alone.
+
+### Keyframes (`keyframe_tracks`)
+- **`action=list`** — read-only inspection; pass `from_time`/`to_time` for `loopGaps`. Parent `numKeys` is often 0 — keys live on Bezier Float sub-controllers.
+- **`action=loop`** — copies evaluated pose from `from_time` to `to_time` parent-first; use for parented reflection rigs (e.g. `Plane001` → children). Defaults: frames 1→100.
+- **`action=match`** with `order=hierarchy` — same parent-first copy as `loop` when closing endpoints on rigged hierarchies.
+- Prefer **`value`/`move` on keyed tracks** over `transform_object` for animated objects — `transform_object` rewrites keys at the current slider frame.
+- **`tracks`** accepts exact tokens only: `all`, `position`/`pos`, `rotation`/`rot`, `scale`/`scl`, `transform`/`tm` — not substring matches.
 
 ## MAXScript Pitfalls
 

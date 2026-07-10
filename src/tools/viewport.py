@@ -122,7 +122,12 @@ def capture_viewport(
     max_height: int = 0,
     return_image: bool = False,
 ) -> Any:
-    """Capture the current 3ds Max viewport to a file and return compact metadata."""
+    """Capture the current 3ds Max viewport to a file and return compact metadata.
+
+    Use when: quick visual proof after a scene change.
+    Not when: the user asked for a full render (render_scene) or a multi-angle grid
+    (capture_multi_view).
+    """
     max_width = max(0, int(max_width))
     max_height = max(0, int(max_height))
 
@@ -221,7 +226,11 @@ def capture_multi_view(
     max_height: int = 0,
     return_image: bool = False,
 ) -> Any:
-    """Capture multiple viewport angles to a stitched file and return compact metadata."""
+    """Capture multiple viewport angles to a stitched file and return compact metadata.
+
+    Use when: verifying scene changes from several angles (preferred after meaningful edits).
+    Not when: a single active viewport is enough (capture_viewport) or the user asked to render.
+    """
     payload = {}
     if views:
         payload["views"] = views

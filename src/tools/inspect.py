@@ -12,7 +12,12 @@ from src.helpers.maxscript import safe_string
 
 @mcp.tool()
 def inspect_object(name: str) -> str:
-    """Get a deep exploratory object summary."""
+    """Get a deep exploratory object summary (props, modifiers, material, instances).
+
+    Use when: you need a full dump of one named object before editing it.
+    Not when: listing/finding many nodes (query_scene) or a compact property snapshot
+    (get_object_properties).
+    """
     if client.native_available:
         try:
             payload = _json.dumps({"name": name})

@@ -1,5 +1,6 @@
 #include "mcp_bridge/native_handlers.h"
 #include "mcp_bridge/handler_helpers.h"
+#include "mcp_bridge/spatial_snapshot.h"
 #include "mcp_bridge/bridge_gup.h"
 
 #include <modstack.h>
@@ -7,6 +8,27 @@
 
 using json = nlohmann::json;
 using namespace HandlerHelpers;
+
+static json ModifierStackJson(INode* node) {
+    json stack = json::array();
+    if (!node) return stack;
+    Object* objRef = node->GetObjectRef();
+    if (!objRef || objRef->SuperClassID() != GEN_DERIVOB_CLASS_ID) return stack;
+    IDerivedObject* dobj = (IDerivedObject*)objRef;
+    for (int i = 0; i < dobj->NumModifiers(); i++) {
+        Modifier* mod = dobj->GetModifier(i);
+        if (!mod) continue;
+        stack.push_back({
+            {"index", i + 1},
+            {"name", WideToUtf8(mod->GetName(false).data())},
+            {"class", WideToUtf8(mod->ClassName().data())},
+            {"enabled", mod->IsEnabled() != 0},
+            {"enabledInViews", mod->IsEnabledInViews() != 0},
+            {"enabledInRenders", mod->IsEnabledInRender() != 0},
+        });
+    }
+    return stack;
+}
 
 // ── Helper: get IDerivedObject, creating one if needed ────────
 static IDerivedObject* GetOrCreateDerivedObject(INode* node) {
@@ -43,11 +65,9 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
         std::string modClass = p.value("modifier", "");
         std::string modParams = p.value("params", "");
 
-        if (name.empty()) throw std::runtime_error("name is required");
         if (modClass.empty()) throw std::runtime_error("modifier is required");
 
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
 
         Interface* ip = GetCOREInterface();
         TimeValue t = ip->GetTime();
@@ -107,7 +127,14 @@ std::string NativeHandlers::AddModifier(const std::string& params, MCPBridgeGUP*
         }
 
         ip->RedrawViews(t);
-        return "Added " + WideToUtf8(mod->ClassName().data()) + " to " + WideToUtf8(node->GetName());
+        json result = NodeIdentityJson(node);
+        result["message"] = "Added " + WideToUtf8(mod->ClassName().data()) + " to " + WideToUtf8(node->GetName());
+        result["addedModifier"] = {
+            {"name", WideToUtf8(mod->GetName(false).data())},
+            {"class", WideToUtf8(mod->ClassName().data())},
+        };
+        result["stack"] = ModifierStackJson(node);
+        return result.dump();
     });
 }
 
@@ -118,11 +145,9 @@ std::string NativeHandlers::RemoveModifier(const std::string& params, MCPBridgeG
         std::string name = p.value("name", "");
         std::string modName = p.value("modifier", "");
 
-        if (name.empty()) throw std::runtime_error("name is required");
         if (modName.empty()) throw std::runtime_error("modifier name is required");
 
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
 
         Object* objRef = node->GetObjectRef();
         if (!objRef || objRef->SuperClassID() != GEN_DERIVOB_CLASS_ID) {
@@ -137,7 +162,11 @@ std::string NativeHandlers::RemoveModifier(const std::string& params, MCPBridgeG
 
         dobj->DeleteModifier(idx);
         GetCOREInterface()->RedrawViews(GetCOREInterface()->GetTime());
-        return "Removed modifier \"" + modName + "\" from " + WideToUtf8(node->GetName());
+        json result = NodeIdentityJson(node);
+        result["message"] = "Removed modifier \"" + modName + "\" from " + WideToUtf8(node->GetName());
+        result["removedModifier"] = modName;
+        result["stack"] = ModifierStackJson(node);
+        return result.dump();
     });
 }
 
@@ -149,10 +178,7 @@ std::string NativeHandlers::SetModifierState(const std::string& params, MCPBridg
         std::string modName = p.value("modifier_name", "");
         int modIndex = p.value("modifier_index", 0);
 
-        if (name.empty()) throw std::runtime_error("name is required");
-
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
 
         Object* objRef = node->GetObjectRef();
         if (!objRef || objRef->SuperClassID() != GEN_DERIVOB_CLASS_ID) {
@@ -209,10 +235,18 @@ std::string NativeHandlers::SetModifierState(const std::string& params, MCPBridg
         GetCOREInterface()->RedrawViews(GetCOREInterface()->GetTime());
 
         std::string modDisplayName = WideToUtf8(mod->GetName(false).data());
-        return "Set state on " + modDisplayName + " (" + WideToUtf8(node->GetName()) + "): " +
-               "enabled=" + (mod->IsEnabled() ? "true" : "false") +
-               " views=" + (mod->IsEnabledInViews() ? "true" : "false") +
-               " renders=" + (mod->IsEnabledInRender() ? "true" : "false");
+        json result = NodeIdentityJson(node);
+        result["message"] = "Set state on " + modDisplayName + " (" + WideToUtf8(node->GetName()) + ")";
+        result["modifier"] = {
+            {"name", modDisplayName},
+            {"index", idx + 1},
+            {"class", WideToUtf8(mod->ClassName().data())},
+            {"enabled", mod->IsEnabled() != 0},
+            {"enabledInViews", mod->IsEnabledInViews() != 0},
+            {"enabledInRenders", mod->IsEnabledInRender() != 0},
+        };
+        result["stack"] = ModifierStackJson(node);
+        return result.dump();
     });
 }
 
@@ -222,22 +256,37 @@ std::string NativeHandlers::CollapseModifierStack(const std::string& params, MCP
         json p = json::parse(params, nullptr, false);
         std::string name = p.value("name", "");
         int toIndex = p.value("to_index", 0);
+        bool dryRun = p.value("dry_run", false);
 
-        if (name.empty()) throw std::runtime_error("name is required");
-
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
+        name = WideToUtf8(node->GetName());
 
         Interface* ip = GetCOREInterface();
         TimeValue t = ip->GetTime();
 
         Object* objRef = node->GetObjectRef();
         if (!objRef || objRef->SuperClassID() != GEN_DERIVOB_CLASS_ID) {
-            return "No modifier stack to collapse on " + name;
+            json result = NodeIdentityJson(node);
+            result["status"] = "no_stack";
+            result["message"] = "No modifier stack to collapse on " + name;
+            result["stack"] = json::array();
+            return result.dump();
         }
 
         IDerivedObject* dobj = (IDerivedObject*)objRef;
         int numMods = dobj->NumModifiers();
+        json beforeStack = ModifierStackJson(node);
+
+        if (dryRun) {
+            json result = NodeIdentityJson(node);
+            result["dry_run"] = true;
+            result["to_index"] = toIndex;
+            result["stack"] = beforeStack;
+            result["message"] = toIndex > 0
+                ? "Would collapse " + name + " to modifier index " + std::to_string(toIndex)
+                : "Would collapse entire stack on " + name;
+            return result.dump();
+        }
 
         if (toIndex > 0) {
             // Collapse to specific index (1-based)
@@ -256,7 +305,12 @@ std::string NativeHandlers::CollapseModifierStack(const std::string& params, MCP
                 JsonEscape(name) + "\") " + std::to_string(toIndex) + " off";
             RunMAXScript(script);
             ip->RedrawViews(t);
-            return "Collapsed " + WideToUtf8(node->GetName()) + " to modifier index " + std::to_string(toIndex);
+            json result = NodeIdentityJson(node);
+            result["message"] = "Collapsed " + WideToUtf8(node->GetName()) + " to modifier index " + std::to_string(toIndex);
+            result["to_index"] = toIndex;
+            result["beforeStack"] = beforeStack;
+            result["stack"] = ModifierStackJson(node);
+            return result.dump();
         }
 
         // Full collapse: evaluate pipeline, get final object, replace
@@ -287,7 +341,13 @@ std::string NativeHandlers::CollapseModifierStack(const std::string& params, MCP
         // Get resulting class
         ObjectState finalOs = node->EvalWorldState(t);
         std::string resultClass = finalOs.obj ? WideToUtf8(finalOs.obj->ClassName().data()) : "Unknown";
-        return "Collapsed entire stack on " + WideToUtf8(node->GetName()) + " — now: " + resultClass;
+        json result = NodeIdentityJson(node);
+        result["message"] = "Collapsed entire stack on " + WideToUtf8(node->GetName());
+        result["resultClass"] = resultClass;
+        result["beforeStack"] = beforeStack;
+        result["stack"] = ModifierStackJson(node);
+        result["spatial"] = SpatialSnapshot::BuildSpatialSnapshot(node, t);
+        return result.dump();
     });
 }
 
@@ -298,11 +358,9 @@ std::string NativeHandlers::MakeModifierUnique(const std::string& params, MCPBri
         std::string name = p.value("name", "");
         int modIndex = p.value("modifier_index", 0);
 
-        if (name.empty()) throw std::runtime_error("name is required");
         if (modIndex <= 0) throw std::runtime_error("modifier_index (1-based) is required");
 
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
 
         Object* objRef = node->GetObjectRef();
         if (!objRef || objRef->SuperClassID() != GEN_DERIVOB_CLASS_ID) {
@@ -332,7 +390,14 @@ std::string NativeHandlers::MakeModifierUnique(const std::string& params, MCPBri
         dobj->AddModifier(cloned, nullptr, idx);
 
         GetCOREInterface()->RedrawViews(GetCOREInterface()->GetTime());
-        return "Made modifier " + modDisplayName + " unique on " + WideToUtf8(node->GetName());
+        json result = NodeIdentityJson(node);
+        result["message"] = "Made modifier " + modDisplayName + " unique on " + WideToUtf8(node->GetName());
+        result["modifier"] = {
+            {"name", modDisplayName},
+            {"index", modIndex},
+        };
+        result["stack"] = ModifierStackJson(node);
+        return result.dump();
     });
 }
 
@@ -372,7 +437,9 @@ std::string NativeHandlers::SetModifierProperty(const std::string& params, MCPBr
         TimeValue t = ip->GetTime();
 
         std::vector<INode*> targets;
-        if (!names.empty()) {
+        if (PayloadHandleValue(p) != 0ULL) {
+            targets.push_back(ResolveNodeFromPayload(p));
+        } else if (!names.empty()) {
             for (const auto& n : names) {
                 INode* node = FindNodeByName(n);
                 if (node) targets.push_back(node);
@@ -416,6 +483,7 @@ std::string NativeHandlers::SetModifierProperty(const std::string& params, MCPBr
                 modCount++;
                 hits.push_back({
                     {"object", nodeName},
+                    {"handle", NodeHandle(node)},
                     {"modifier", WideToUtf8(mod->GetName(false).data())},
                     {"index", idx + 1},
                     {"class", WideToUtf8(mod->ClassName().data())},

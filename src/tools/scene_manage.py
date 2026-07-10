@@ -61,3 +61,17 @@ def manage_scene(action: str) -> str:
 
     response = client.send_command(maxscript)
     return response.get("result", "")
+
+
+@mcp.tool()
+def undo_last() -> str:
+    """Undo the last 3ds Max scene operation."""
+    if client.native_available:
+        try:
+            response = client.send_command("{}", cmd_type="native:undo_last")
+            return response.get("result", "")
+        except RuntimeError:
+            pass
+
+    response = client.send_command('max undo; "Undid last scene operation"')
+    return response.get("result", "")

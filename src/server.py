@@ -17,6 +17,118 @@ if __name__ == "__main__" and __spec__ is not None:
     sys.modules.setdefault(__spec__.name, sys.modules[__name__])
 
 
+_READ_ONLY_TOOLS = {
+    "get_bridge_status",
+    "get_plugin_capabilities",
+    "query_scene",
+    "get_object_properties",
+    "analyze_node_orientation",
+    "get_hierarchy",
+    "get_instances",
+    "get_dependencies",
+    "get_materials",
+    "get_material_library",
+    "get_material_slots",
+    "inspect_material_network",
+    "inspect_object",
+    "inspect_properties",
+    "discover_plugin_surface",
+    "get_plugin_manifest",
+    "inspect_plugin_class",
+    "inspect_plugin_constructor",
+    "inspect_plugin_instance",
+    "get_session_context",
+    "capture_viewport",
+    "capture_multi_view",
+    "capture_screen",
+    "get_effects",
+    "get_state_sets",
+    "get_camera_sequence",
+    "inspect_track_view",
+    "inspect_controller",
+    "list_wireable_params",
+    "get_wired_params",
+    "inspect_max_file",
+    "search_max_files",
+    "batch_file_info",
+    "watch_scene",
+    "walk_references",
+    "map_class_relationships",
+    "learn_scene_patterns",
+}
+
+_DESTRUCTIVE_TOOLS = {
+    "delete_objects",
+    "collapse_modifier_stack",
+    "batch_replace_materials",
+    "replace_material",
+    "remove_modifier",
+    "batch_rename_objects",
+    "manage_layers",
+    "manage_groups",
+    "manage_selection_sets",
+    "merge_from_file",
+    "render_cancel",
+    "delete_effect",
+    "undo_last",
+}
+
+_IDEMPOTENT_TOOLS = {
+    "get_bridge_status",
+    "get_plugin_capabilities",
+    "query_scene",
+    "get_object_properties",
+    "analyze_node_orientation",
+    "get_hierarchy",
+    "get_instances",
+    "get_dependencies",
+    "get_materials",
+    "get_material_library",
+    "get_material_slots",
+    "inspect_material_network",
+    "inspect_object",
+    "inspect_properties",
+    "get_session_context",
+    "capture_viewport",
+    "capture_multi_view",
+    "capture_screen",
+    "select_objects",
+    "set_visibility",
+}
+
+
+def _tool_annotations(name: str) -> dict[str, bool]:
+    annotations: dict[str, bool] = {}
+    if name in _READ_ONLY_TOOLS or name.startswith(("get_", "inspect_", "discover_", "list_")):
+        annotations["readOnlyHint"] = True
+    if name in _DESTRUCTIVE_TOOLS:
+        annotations["destructiveHint"] = True
+    if name in _IDEMPOTENT_TOOLS:
+        annotations["idempotentHint"] = True
+    return annotations
+
+
+def _register_raw_tool(raw_tool, wrapped, annotations: dict[str, bool]) -> None:
+    if annotations:
+        try:
+            raw_tool(wrapped, annotations=annotations)
+            return
+        except TypeError:
+            pass
+    raw_tool(wrapped)
+
+
+def _raw_tool_decorator(raw_tool, decorator_args, decorator_kwargs, annotations: dict[str, bool]):
+    if annotations and "annotations" not in decorator_kwargs:
+        annotated_kwargs = dict(decorator_kwargs)
+        annotated_kwargs["annotations"] = annotations
+        try:
+            return raw_tool(*decorator_args, **annotated_kwargs)
+        except TypeError:
+            pass
+    return raw_tool(*decorator_args, **decorator_kwargs)
+
+
 def _install_structured_tool_results() -> None:
     """Register MCP tools with stable JSON envelopes while keeping raw callables."""
     raw_tool = mcp.tool
@@ -24,17 +136,23 @@ def _install_structured_tool_results() -> None:
     def structured_tool(*decorator_args, **decorator_kwargs):
         if decorator_args and callable(decorator_args[0]) and len(decorator_args) == 1 and not decorator_kwargs:
             fn = decorator_args[0]
+            annotations = _tool_annotations(getattr(fn, "__name__", "") or "")
             wrapped = make_structured_tool(
                 fn,
                 before_call=client.clear_last_response,
                 transport_provider=client.get_last_transport,
             )
-            raw_tool(wrapped)
+            _register_raw_tool(raw_tool, wrapped, annotations)
             return fn
 
-        raw_decorator = raw_tool(*decorator_args, **decorator_kwargs)
-
         def decorate(fn):
+            annotations = _tool_annotations(getattr(fn, "__name__", "") or "")
+            raw_decorator = _raw_tool_decorator(
+                raw_tool,
+                decorator_args,
+                decorator_kwargs,
+                annotations,
+            )
             wrapped = make_structured_tool(
                 fn,
                 before_call=client.clear_last_response,
@@ -76,10 +194,12 @@ CORE_TOOL_MODULES = (
     "plugins",
     "organize",
     "viewport",
+    # "advancedvision",  # WIP — code kept & compiled, tool not exposed yet
     "identify",
     "file_access",
     "learning",
     "controllers",
+    "keyframes",
     "tool_test",
 )
 
@@ -90,6 +210,7 @@ SPECIALTY_TOOL_MODULES = (
     "floor_plan",
     "railclone",
     "render",
+    "render_automations",
     "scattering",
     "state_sets",
     "tyflow",
@@ -166,8 +287,8 @@ def max_assistant() -> str:
         "Work in natural language with the user, but keep tool usage structured and explicit.\n"
         "DO NOT render unless the user asks.\n"
         "Use capture_viewport for fast viewport context.\n"
-        "MCP tool replies default to minimal tripback: `{ok, result}` on success, `{ok, error}` on failure (transport only when present on errors). Set MCP_TRIPBACK_MODE=full for elapsed_ms and full transport metadata.\n"
-        "If ok is false, read error.message before retrying or choosing a fallback.\n"
+        "MCP tool replies are structured objects: `{ok, result}` on success, `{ok, error}` on failure, optional top-level `hint` (`message`, `suggested_tools`, `next`). Transport only when present on errors. Set MCP_TRIPBACK_MODE=full for elapsed_ms and full transport metadata.\n"
+        "If ok is false, read error.message and any hint.suggested_tools before retrying or choosing a fallback.\n"
         f"Reference resource: {SKILL_RESOURCE_URI}\n"
         "Load the reference resource only when you need detailed project rules or MAXScript examples.\n"
     )

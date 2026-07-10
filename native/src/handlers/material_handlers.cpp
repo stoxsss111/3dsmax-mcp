@@ -3,6 +3,7 @@
 #include "mcp_bridge/bridge_gup.h"
 
 #include <iparamb2.h>
+#include <set>
 
 using json = nlohmann::json;
 using namespace HandlerHelpers;
@@ -55,11 +56,12 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
     return gup->GetExecutor().ExecuteSync([&params]() -> std::string {
         json p = json::parse(params, nullptr, false);
         auto names = p.value("names", std::vector<std::string>{});
+        auto handles = p.value("handles", std::vector<unsigned long long>{});
         std::string matClass = p.value("material_class", "");
         std::string matName = p.value("material_name", "");
         std::string matParams = p.value("params", "");
 
-        if (names.empty()) throw std::runtime_error("names is required");
+        if (names.empty() && handles.empty()) throw std::runtime_error("names or handles is required");
         if (matClass.empty()) throw std::runtime_error("material_class is required");
 
         Interface* ip = GetCOREInterface();
@@ -86,15 +88,43 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
                 // Now assign via MAXScript too since we can't get the Mtl* back easily
                 int assignCount = 0;
                 json notFound = json::array();
-                for (const auto& name : names) {
-                    INode* node = FindNodeByName(name);
-                    if (node) {
-                        std::string assignScript = "(getNodeByName \"" + JsonEscape(name) +
+                json assigned = json::array();
+                std::set<INode*> seen;
+                for (unsigned long long handle : handles) {
+                    INode* node = FindNodeByHandle(handle);
+                    if (node && seen.insert(node).second) {
+                        std::string nodeName = WideToUtf8(node->GetName());
+                        std::string assignScript = "(getNodeByName \"" + JsonEscape(nodeName) +
                             "\").material = __mcp_tmp_mtl";
                         RunMAXScript(assignScript);
+                        assigned.push_back(NodeIdentityJson(node));
                         assignCount++;
-                    } else {
+                    } else if (!node) {
+                        notFound.push_back({{"handle", handle}});
+                    }
+                }
+                for (const auto& name : names) {
+                    std::vector<INode*> matches = CollectNodesByExactName(name);
+                    if (matches.empty()) {
                         notFound.push_back(name);
+                        continue;
+                    }
+                    if (matches.size() > 1) {
+                        json candidates = json::array();
+                        for (INode* candidate : matches) candidates.push_back(NodeIdentityJson(candidate));
+                        throw std::runtime_error(StructuredErrorPayload(
+                            "AMBIGUOUS",
+                            "Ambiguous object name: " + name,
+                            {{"message", "Pass handles to disambiguate these object names."}, {"candidates", candidates}}));
+                    }
+                    INode* node = matches[0];
+                    if (node && seen.insert(node).second) {
+                        std::string nodeName = WideToUtf8(node->GetName());
+                        std::string assignScript = "(getNodeByName \"" + JsonEscape(nodeName) +
+                            "\").material = __mcp_tmp_mtl";
+                        RunMAXScript(assignScript);
+                        assigned.push_back(NodeIdentityJson(node));
+                        assignCount++;
                     }
                 }
                 // Get the material name back
@@ -102,12 +132,24 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
                 std::string mtlClass = RunMAXScript("(classOf __mcp_tmp_mtl) as string");
                 ip->RedrawViews(t);
 
-                std::string msg = "Created " + mtlClass + " \"" + mtlName +
+                json result;
+                result["message"] = "Created " + mtlClass + " \"" + mtlName +
                     "\" and assigned to " + std::to_string(assignCount) + " object(s)";
-                if (!notFound.empty())
-                    msg += " | Not found: " + std::to_string(notFound.size());
-                return msg;
-            } catch (...) {
+                result["material"] = {
+                    {"name", mtlName},
+                    {"class", mtlClass},
+                    {"requestedClass", matClass},
+                };
+                result["assigned"] = assigned;
+                result["assignedCount"] = assignCount;
+                result["notFound"] = notFound;
+                return result.dump();
+            } catch (const std::exception& e) {
+                std::string message = e.what();
+                json structured = json::parse(message, nullptr, false);
+                if (!structured.is_discarded() && structured.is_object() && structured.contains("code")) {
+                    throw;
+                }
                 throw std::runtime_error("Unknown material class: " + matClass);
             }
         }
@@ -129,25 +171,56 @@ std::string NativeHandlers::AssignMaterial(const std::string& params, MCPBridgeG
         // Assign to nodes
         int assignCount = 0;
         json notFound = json::array();
-        for (const auto& name : names) {
-            INode* node = FindNodeByName(name);
-            if (node) {
+        json assigned = json::array();
+        std::set<INode*> seen;
+        for (unsigned long long handle : handles) {
+            INode* node = FindNodeByHandle(handle);
+            if (node && seen.insert(node).second) {
                 node->SetMtl(mtl);
+                assigned.push_back(NodeIdentityJson(node));
                 assignCount++;
-            } else {
+            } else if (!node) {
+                notFound.push_back({{"handle", handle}});
+            }
+        }
+        for (const auto& name : names) {
+            std::vector<INode*> matches = CollectNodesByExactName(name);
+            if (matches.empty()) {
                 notFound.push_back(name);
+                continue;
+            }
+            if (matches.size() > 1) {
+                json candidates = json::array();
+                for (INode* candidate : matches) candidates.push_back(NodeIdentityJson(candidate));
+                throw std::runtime_error(StructuredErrorPayload(
+                    "AMBIGUOUS",
+                    "Ambiguous object name: " + name,
+                    {{"message", "Pass handles to disambiguate these object names."}, {"candidates", candidates}}));
+            }
+            INode* node = matches[0];
+            if (node && seen.insert(node).second) {
+                node->SetMtl(mtl);
+                assigned.push_back(NodeIdentityJson(node));
+                assignCount++;
             }
         }
 
         mtl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
         ip->RedrawViews(t);
 
-        std::string msg = "Created " + WideToUtf8(mtl->ClassName().data()) + " \"" +
-                          WideToUtf8(mtl->GetName().data()) + "\" and assigned to " +
-                          std::to_string(assignCount) + " object(s)";
-        if (!notFound.empty())
-            msg += " | Not found: " + std::to_string(notFound.size());
-        return msg;
+        json result;
+        result["message"] = "Created " + WideToUtf8(mtl->ClassName().data()) + " \"" +
+                            WideToUtf8(mtl->GetName().data()) + "\" and assigned to " +
+                            std::to_string(assignCount) + " object(s)";
+        result["material"] = {
+            {"name", WideToUtf8(mtl->GetName().data())},
+            {"class", WideToUtf8(mtl->ClassName().data())},
+            {"requestedClass", matClass},
+        };
+        result["assigned"] = assigned;
+        result["assignedCount"] = assignCount;
+        result["notFound"] = notFound;
+        return result.dump();
     });
 }
 
@@ -160,11 +233,10 @@ std::string NativeHandlers::SetMaterialProperty(const std::string& params, MCPBr
         std::string value = p.value("value", "");
         int subMatIndex = p.value("sub_material_index", 0);
 
-        if (name.empty()) throw std::runtime_error("name is required");
         if (prop.empty()) throw std::runtime_error("property is required");
 
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
+        name = WideToUtf8(node->GetName());
 
         Mtl* mtl = GetTargetMaterial(node, subMatIndex);
         if (!mtl) {
@@ -176,11 +248,24 @@ std::string NativeHandlers::SetMaterialProperty(const std::string& params, MCPBr
         Interface* ip = GetCOREInterface();
         TimeValue t = ip->GetTime();
 
+        auto propertyResult = [&](const std::string& message) -> std::string {
+            json result = NodeIdentityJson(node);
+            result["message"] = message;
+            result["property"] = prop;
+            result["value"] = value;
+            result["material"] = {
+                {"name", WideToUtf8(mtl->GetName().data())},
+                {"class", WideToUtf8(mtl->ClassName().data())},
+                {"sub_material_index", subMatIndex},
+            };
+            return result.dump();
+        };
+
         // Pure SDK path: try IParamBlock2 first
         if (SetParamByName((Animatable*)mtl, prop, value, t)) {
             mtl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
             ip->RedrawViews(t);
-            return "Set " + WideToUtf8(mtl->GetName().data()) + "." + prop;
+            return propertyResult("Set " + WideToUtf8(mtl->GetName().data()) + "." + prop);
         }
 
         // For texture map / material reference assignments that reference a MAXScript
@@ -197,7 +282,7 @@ std::string NativeHandlers::SetMaterialProperty(const std::string& params, MCPBr
                              "; \"Set " + JsonEscape(prop) + "\") catch (\"Error: \" + getCurrentException())";
         std::string result = RunMAXScript(script);
         ip->RedrawViews(t);
-        return result;
+        return propertyResult(result);
     });
 }
 
@@ -209,11 +294,10 @@ std::string NativeHandlers::SetMaterialProperties(const std::string& params, MCP
         auto properties = p.value("properties", std::map<std::string, std::string>{});
         int subMatIndex = p.value("sub_material_index", 0);
 
-        if (name.empty()) throw std::runtime_error("name is required");
         if (properties.empty()) throw std::runtime_error("properties is required");
 
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object not found: " + name);
+        INode* node = ResolveNodeFromPayload(p);
+        name = WideToUtf8(node->GetName());
 
         Mtl* mtl = GetTargetMaterial(node, subMatIndex);
         if (!mtl) {
@@ -255,19 +339,17 @@ std::string NativeHandlers::SetMaterialProperties(const std::string& params, MCP
         mtl->NotifyDependents(FOREVER, PART_ALL, REFMSG_CHANGE);
         ip->RedrawViews(t);
 
-        std::string msg = "Set " + std::to_string(okList.size()) + " properties on " +
-                          WideToUtf8(mtl->GetName().data());
-        if (!okList.empty()) {
-            msg += ":";
-            for (size_t i = 0; i < okList.size(); i++)
-                msg += (i > 0 ? ", " : " ") + okList[i].get<std::string>();
-        }
-        if (!errList.empty()) {
-            msg += " | Errors:";
-            for (size_t i = 0; i < errList.size(); i++)
-                msg += (i > 0 ? "; " : " ") + errList[i].get<std::string>();
-        }
-        return msg;
+        json result = NodeIdentityJson(node);
+        result["message"] = "Set " + std::to_string(okList.size()) + " properties on " +
+                            WideToUtf8(mtl->GetName().data());
+        result["material"] = {
+            {"name", WideToUtf8(mtl->GetName().data())},
+            {"class", WideToUtf8(mtl->ClassName().data())},
+            {"sub_material_index", subMatIndex},
+        };
+        result["propertiesSet"] = okList;
+        result["errors"] = errList;
+        return result.dump();
     });
 }
 
@@ -528,7 +610,7 @@ std::string NativeHandlers::BatchReplaceMaterials(const std::string& params, MCP
         json p = json::parse(params);
         auto replacements = p.contains("replacements") && !p["replacements"].is_null()
                             ? p["replacements"] : json::array();
-        bool preview = p.value("preview", false);
+        bool preview = p.value("preview", false) || p.value("dry_run", false);
 
         Interface* ip = GetCOREInterface();
         INode* root = ip->GetRootNode();
@@ -583,7 +665,7 @@ std::string NativeHandlers::BatchReplaceMaterials(const std::string& params, MCP
 
             json objects = json::array();
             for (INode* n : tgtIt->second) {
-                objects.push_back(WideToUtf8(n->GetName()));
+                objects.push_back(NodeIdentityJson(n));
                 if (!preview) {
                     n->SetMtl(srcIt->second);
                 }
@@ -604,6 +686,7 @@ std::string NativeHandlers::BatchReplaceMaterials(const std::string& params, MCP
         result["results"] = results;
         result["total_replaced"] = totalReplaced;
         result["preview"] = preview;
+        result["dry_run"] = p.value("dry_run", false);
         return result.dump();
     });
 }
@@ -710,11 +793,8 @@ std::string NativeHandlers::SetSubMaterial(const std::string& params, MCPBridgeG
         std::string msParams = p.value("params", "");
         int sourceIndex = p.value("source_index", 0);
 
-        if (name.empty())
-            throw std::runtime_error("name is required");
-
-        INode* node = FindNodeByName(name);
-        if (!node) throw std::runtime_error("Object '" + name + "' not found");
+        INode* node = ResolveNodeFromPayload(p);
+        name = WideToUtf8(node->GetName());
 
         Mtl* parentMtl = node->GetMtl();
         if (!parentMtl) throw std::runtime_error("Object has no material");
@@ -752,6 +832,7 @@ std::string NativeHandlers::SetSubMaterial(const std::string& params, MCPBridgeG
             json result;
             result["status"] = "assigned";
             result["object"] = name;
+            result["handle"] = NodeHandle(node);
             result["sub_material_index"] = subIdx;
             result["material_name"] = resultName;
             result["material_class"] = matClass;
@@ -770,6 +851,7 @@ std::string NativeHandlers::SetSubMaterial(const std::string& params, MCPBridgeG
         json result;
         result["status"] = "assigned";
         result["object"] = name;
+        result["handle"] = NodeHandle(node);
         result["sub_material_index"] = subIdx;
         result["material_name"] = assignedName;
         return result.dump();

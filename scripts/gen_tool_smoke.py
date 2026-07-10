@@ -110,6 +110,7 @@ CUSTOM: dict[str, dict] = {
     "inspect_properties": {"name": SMOKE_TARGET},
     "inspect_track_view": {"name": SMOKE_TARGET, "depth": 2},
     "inspect_controller": {"name": SMOKE_TARGET, "param_path": "[#transform][#position][#x_position]"},
+    "keyframe_tracks": {"action": "list", "names": [SMOKE_TARGET], "tracks": "position", "from_time": 0, "to_time": 100},
     "get_material_slots": {"name": SMOKE_TARGET, "slot_scope": "map"},
     "inspect_material_network": {"name": SMOKE_TARGET, "depth": 2, "verify_files": False},
     "get_hierarchy": {"name": SMOKE_TARGET},

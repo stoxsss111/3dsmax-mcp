@@ -2,6 +2,67 @@
 
 All notable changes to this project are documented here.
 
+## [1.2.0] — 2026-07-09
+
+Structured tool envelopes, centralized error hints, atomic undo, and handle addressing.
+
+### Changed
+
+- MCP tools return a structured `ToolEnvelope` object (`ok`/`result`/`error`/`hint`) with an advertised output schema, replacing JSON-string tripbacks.
+- Errors carry a closed `code` enum (`NOT_FOUND`, `AMBIGUOUS`, `PLUGIN_MISSING`, `BRIDGE_DOWN`, `RENDER_BUSY`, `SAFE_MODE`, `BAD_PARAM`) plus `retryable`; native structured errors propagate instead of falling back to MAXScript.
+- Mutating native handlers run inside a `theHold` transaction: one MCP call = one undo step, and mid-operation failures roll back atomically.
+- Mutating tools return compact post-state proof (new transform/bbox, modifier stack order, resolved material class) so agents don't need a verify round trip.
+- MAXScript intent-suggestion rules moved to `src/helpers/error_hints.py` and now apply at the envelope layer, so exceptions from `execute_maxscript` get intent hints too.
+- Tool docstrings gained "Use when / Not when" guidance to steer agents toward dedicated tools.
+
+### Added
+
+- `undo_last` — reverts the previous MCP-initiated scene change.
+- Anim-handle addressing: tripbacks include `handle`, node tools accept name or handle, and ambiguous names return candidate lists (handle + class + layer) in the hint.
+- NodeEvent scene journal in the native bridge; `query_scene(action=delta)` reads seq-numbered changes and answers `unchanged_since` cheaply instead of rescanning.
+- MCP tool annotations (`readOnlyHint`/`destructiveHint`/`idempotentHint`), `dry_run` on destructive tools, and explicit scene units in `get_session_context`.
+- Auto-resolved error hints when the tool authored none: not-found → `query_scene`, safe-mode → don't retry, bridge/pipe failures → `get_bridge_status`. Tool-authored hints always win.
+- Hint normalization: string, plural `hints`, and list hints coerce to a canonical `{message, suggested_tools, next}` shape.
+- `scripts/benchmark_agent_ergonomics.py` — measures round trips and approximate tokens per canonical task against a live Max.
+
+## [1.1.0] — 2026-07-06
+
+Render automation (done-signal) and material-library tooling.
+
+### Added
+
+- `render_automations` — arms a render done-signal at 3ds Max's `NOTIFY_POST_RENDER` and reports completion (with the real `frames_rendered` count) through an event-driven file watcher (`scripts/render_signal_wait.ps1`); no polling, never blocks the bridge. Includes `cancel` to abort a render in flight from the pipe thread.
+- Native `render_start` / `render_cancel` handlers and an always-on render-completion pinger.
+- `get_material_library` — inspects the volatile material scratchpads (`currentMaterialLibrary` and the Compact Material Editor slots) that aren't saved with the scene, and warns when the current library has no backing `.mat` file.
+- `backup_material_library` — saves those scratchpads to timestamped `.mat` files without touching the scene.
+
+### Changed
+
+- The bridge is a render *listener*, not a trigger: `render_automations(start)` only arms the done-signal, and the render is fired externally (Render button, or `max quick render` via `execute_maxscript`). Launching the render from inside the bridge caused 3ds Max to auto-start a second render on completion and loop; keeping the trigger outside the bridge avoids it.
+- `execute_maxscript` suggests the material-library tools when raw MAXScript touches the material library.
+- `SKILL.md` trimmed to Max-usage gotchas only.
+
+## [1.0.6] — 2026-06-24
+
+Keyframing and installer release draft with the package version bumped to `1.0.6`.
+
+### Added
+
+- `keyframe_tracks` for native key inspection, setting, endpoint matching, loop closure, tangent styling, and out-of-range behavior edits.
+- Compact, budgeted keyframe summaries for baked animation and mocap-heavy controllers.
+- Keyed `value` and `move` writes so animation edits can avoid `transform_object` offset side effects.
+
+### Changed
+
+- Keyframe result counters distinguish logical track edits from raw sub-controller edits.
+- Installer discovery covers classic and Microsoft Store Claude Desktop config paths.
+
+### Fixed
+
+- Composite Position/Euler/Scale controllers now create and style explicit-frame keys through their child tracks.
+- Keyframe styling reports stable candidate counts on first set-and-style calls.
+- Track-path matching is exact so narrow keyframe edits do not leak into similarly named tracks.
+
 ## [1.0.5] — 2026-06-01
 
 Material-network release draft with the package version bumped to `1.0.5`.

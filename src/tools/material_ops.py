@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from typing import Optional
 from ..server import mcp, client
-from ..coerce import StrList
+from ..coerce import IntList, StrList
 from src.helpers.maxscript import safe_string, safe_value
 from src.helpers.material_tripback import (
     material_class_hint,
@@ -153,15 +153,19 @@ def _build_shared_pbr_maxscript(
 
 @mcp.tool()
 def assign_material(
-    names: StrList,
-    material_class: str,
+    names: StrList | None = None,
+    material_class: str = "",
     material_name: str = "",
     params: str = "",
+    handles: IntList | None = None,
 ) -> str:
     """Create a material and assign it to one or more objects."""
+    names = names or []
+    handles = handles or []
     if client.native_available:
         payload = {
             "names": names,
+            "handles": handles,
             "material_class": material_class,
             "material_name": material_name,
             "params": params,
@@ -201,10 +205,11 @@ def assign_material(
 
 @mcp.tool()
 def set_material_property(
-    name: str,
-    property: str,
-    value: str,
+    name: str = "",
+    property: str = "",
+    value: str = "",
     sub_material_index: int = 0,
+    handle: int = 0,
 ) -> str:
     """Set a property on an object's material (or sub-material)."""
     if client.native_available:
@@ -214,8 +219,13 @@ def set_material_property(
             "value": value,
             "sub_material_index": sub_material_index,
         }
+        if handle:
+            payload["handle"] = handle
         response = client.send_command(json.dumps(payload), cmd_type="native:set_material_property")
         return response.get("result", "")
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     safe = safe_string(name)
     safe_prop = safe_string(property)
@@ -254,19 +264,26 @@ def set_material_property(
 
 @mcp.tool()
 def set_material_properties(
-    name: str,
-    properties: dict[str, str],
+    name: str = "",
+    properties: dict[str, str] | None = None,
     sub_material_index: int = 0,
+    handle: int = 0,
 ) -> str:
     """Set multiple properties on an object's material in a single call."""
+    properties = properties or {}
     if client.native_available:
         payload = {
             "name": name,
             "properties": properties,
             "sub_material_index": sub_material_index,
         }
+        if handle:
+            payload["handle"] = handle
         response = client.send_command(json.dumps(payload), cmd_type="native:set_material_properties")
         return response.get("result", "")
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     safe = safe_string(name)
 
@@ -331,7 +348,13 @@ def get_material_slots(
     slot_scope: str = "map",
     max_per_group: int = 15,
 ) -> str:
-    """Get compact material slot/property info without schema caches."""
+    """Get compact material slot/property info without schema caches.
+
+    Use when: inspecting map/param slots on a known material (prefer slot_scope='map').
+    Not when: listing scene materials (get_materials) or building materials from textures
+    (create_material_from_textures / smart_import). Avoid slot_scope='all' + include_values
+    on Arnold/Physical — output is huge.
+    """
     if client.native_available:
         try:
             payload = json.dumps({
@@ -701,12 +724,13 @@ def set_texture_map_properties(
 
 @mcp.tool()
 def set_sub_material(
-    name: str,
-    sub_material_index: int,
+    name: str = "",
+    sub_material_index: int = 0,
     material_class: str = "",
     material_name: str = "",
     params: str = "",
     source_index: int = 0,
+    handle: int = 0,
 ) -> str:
     """Create or assign a sub-material in a Multi/Sub-Object material slot."""
     if client.native_available:
@@ -718,8 +742,13 @@ def set_sub_material(
             "params": params,
             "source_index": source_index,
         }
+        if handle:
+            payload["handle"] = handle
         response = client.send_command(json.dumps(payload), cmd_type="native:set_sub_material")
         return response.get("result", "")
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     safe = safe_string(name)
     safe_mat_name = safe_string(material_name)

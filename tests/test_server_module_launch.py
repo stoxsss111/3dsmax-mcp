@@ -24,6 +24,8 @@ class ServerModuleLaunchTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("execute_maxscript", tool_names)
         self.assertIn("query_scene", tool_names)
+        self.assertIn("get_material_library", tool_names)
+        self.assertIn("backup_material_library", tool_names)
         self.assertGreater(len(tool_names), 0)
 
 

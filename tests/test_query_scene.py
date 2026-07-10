@@ -47,6 +47,20 @@ class QuerySceneTests(unittest.TestCase):
             payload = json.loads(run_filter(mock_client))
         self.assertEqual(payload["totalObjects"], 4)
 
+    def test_run_delta_forwards_unchanged_since_to_native(self) -> None:
+        client = MagicMock()
+        client.native_available = True
+        client.send_command.return_value = {
+            "result": '{"journal":true,"unchanged":true,"currentSeq":42}',
+        }
+
+        result = json.loads(run_delta(client, capture=True, unchanged_since=41))
+
+        payload = json.loads(client.send_command.call_args.args[0])
+        self.assertEqual(payload, {"capture": True, "unchanged_since": 41})
+        self.assertEqual(client.send_command.call_args.kwargs["cmd_type"], "native:scene_delta")
+        self.assertTrue(result["unchanged"])
+
 
 if __name__ == "__main__":
     unittest.main()

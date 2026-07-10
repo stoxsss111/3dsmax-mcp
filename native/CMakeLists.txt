@@ -88,6 +88,7 @@ set(SOURCES
     src/pipe_server.cpp
     src/command_dispatcher.cpp
     src/main_thread_executor.cpp
+    src/scene_journal.cpp
     src/handlers/scene_handlers.cpp
     src/spatial_snapshot.cpp
     src/handlers/object_handlers.cpp
@@ -97,9 +98,11 @@ set(SOURCES
     src/handlers/scene_manage_handlers.cpp
     src/handlers/file_handlers.cpp
     src/handlers/viewport_handlers.cpp
+    src/handlers/advancedvision_handlers.cpp
     src/handlers/material_handlers.cpp
     src/handlers/material_network_handlers.cpp
     src/handlers/controller_handlers.cpp
+    src/handlers/keyframe_handlers.cpp
     src/handlers/plugin_introspect_handlers.cpp
     src/handlers/organize_handlers.cpp
     src/handlers/learning_handlers.cpp

@@ -1,5 +1,6 @@
 #include "mcp_bridge/native_handlers.h"
 #include "mcp_bridge/handler_helpers.h"
+#include "mcp_bridge/scene_journal.h"
 #include "mcp_bridge/bridge_gup.h"
 #include <cmath>
 #include <map>
@@ -448,6 +449,7 @@ struct NodeState {
 struct SceneDeltaBaseline {
     std::map<std::string, NodeState> snapshot;
     unsigned long long epoch;
+    unsigned long long journalSeq;
 };
 
 static std::map<std::string, SceneDeltaBaseline> g_sceneDeltaSessions;
@@ -496,6 +498,7 @@ static std::map<std::string, NodeState> CaptureSceneState(Interface* ip) {
 void NativeHandlers::ResetSceneDeltaSessions() {
     g_sceneDeltaSessions.clear();
     g_sceneDeltaEpoch++;
+    SceneJournal::Reset();
 }
 
 void NativeHandlers::ReleaseSceneDeltaSession(const std::string& session_id) {
@@ -509,22 +512,57 @@ std::string NativeHandlers::SceneDelta(
     return gup->GetExecutor().ExecuteSync([&params, &session_id]() -> std::string {
         json p = params.empty() ? json::object() : json::parse(params, nullptr, false);
         bool forceCapture = p.value("capture", false);
+        unsigned long long unchangedSince = p.value("unchanged_since", 0ULL);
         const std::string sessionKey = NormalizeSceneDeltaSessionId(session_id);
 
         Interface* ip = GetCOREInterface();
-        auto current = CaptureSceneState(ip);
+        const unsigned long long currentSeq = SceneJournal::CurrentSeq();
+
+        if (unchangedSince > 0ULL) {
+            json changes = SceneJournal::ChangesSince(unchangedSince);
+            json result;
+            result["journal"] = true;
+            result["since"] = unchangedSince;
+            result["currentSeq"] = currentSeq;
+            result["unchanged"] = changes.empty();
+            if (!changes.empty()) {
+                result["changes"] = changes;
+                result["counts"] = {{"changed", changes.size()}};
+            }
+            return result.dump();
+        }
+
         auto existing = g_sceneDeltaSessions.find(sessionKey);
 
         if (forceCapture ||
             existing == g_sceneDeltaSessions.end() ||
             existing->second.epoch != g_sceneDeltaEpoch) {
-            g_sceneDeltaSessions[sessionKey] = {current, g_sceneDeltaEpoch};
+            auto current = CaptureSceneState(ip);
+            g_sceneDeltaSessions[sessionKey] = {current, g_sceneDeltaEpoch, currentSeq};
             json result;
             result["baseline"] = true;
             result["objectCount"] = (int)current.size();
+            result["journal"] = SceneJournal::IsRegistered();
+            result["currentSeq"] = currentSeq;
             return result.dump();
         }
 
+        if (SceneJournal::IsRegistered()) {
+            const unsigned long long since = existing->second.journalSeq;
+            json changes = SceneJournal::ChangesSince(since);
+            existing->second.journalSeq = currentSeq;
+
+            json result;
+            result["journal"] = true;
+            result["since"] = since;
+            result["currentSeq"] = currentSeq;
+            result["unchanged"] = changes.empty();
+            result["changes"] = changes;
+            result["counts"] = {{"changed", changes.size()}};
+            return result.dump();
+        }
+
+        auto current = CaptureSceneState(ip);
         auto& previous = existing->second.snapshot;
 
         // Diff
@@ -582,6 +620,7 @@ std::string NativeHandlers::SceneDelta(
         // Update baseline
         existing->second.snapshot = current;
         existing->second.epoch = g_sceneDeltaEpoch;
+        existing->second.journalSeq = currentSeq;
 
         json result;
         result["added"] = added;
@@ -593,6 +632,7 @@ std::string NativeHandlers::SceneDelta(
             {"modified", modified.size()},
             {"total", (int)current.size()}
         };
+        result["currentSeq"] = currentSeq;
         return result.dump();
     });
 }

@@ -160,3 +160,14 @@ std::string NativeHandlers::ManageScene(const std::string& params, MCPBridgeGUP*
         throw std::runtime_error("Unknown action: " + action + ". Use hold, fetch, reset, save, or info.");
     });
 }
+
+// ── native:undo_last ────────────────────────────────────────────
+std::string NativeHandlers::UndoLast(const std::string& params, MCPBridgeGUP* gup) {
+    return gup->GetExecutor().ExecuteSync([]() -> std::string {
+        RunMAXScript("max undo");
+        json result;
+        result["undone"] = true;
+        result["message"] = "Undid last scene operation";
+        return result.dump();
+    });
+}

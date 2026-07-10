@@ -7,16 +7,24 @@ from src.helpers.maxscript import safe_string
 
 @mcp.tool()
 def transform_object(
-    name: str,
+    name: str = "",
+    handle: int = 0,
     move: Optional[FloatList] = None,
     rotate: Optional[FloatList] = None,
     scale: Optional[FloatList] = None,
     coordinate_system: str = "world",
 ) -> str:
-    """Move, rotate, and/or scale an object by the given offsets."""
+    """Move, rotate, and/or scale an object by world/local offsets.
+
+    Use when: posing unkeyed (or intentionally current-frame) objects.
+    Not when: editing animation on keyed tracks — prefer keyframe_tracks value/move at
+    explicit times; this tool can rewrite keys at the current slider frame.
+    """
     if client.native_available:
         try:
             params: dict = {"name": name}
+            if handle:
+                params["handle"] = handle
             if move:
                 params["move"] = move
             if rotate:
@@ -29,6 +37,9 @@ def transform_object(
             return response.get("result", "")
         except RuntimeError:
             pass
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     # ── MAXScript fallback (TCP) ──────────────────────────────────
     safe = safe_string(name)

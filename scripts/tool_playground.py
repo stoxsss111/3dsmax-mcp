@@ -452,7 +452,12 @@ class ToolInspectorApp:
 
         async def _run() -> dict:
             _content, meta = await mcp.call_tool(name, arguments=arguments)
-            return json.loads(meta["result"])
+            result = meta.get("result") if isinstance(meta, dict) else None
+            if isinstance(result, dict) and "ok" in result:
+                return result
+            if isinstance(result, str):
+                return json.loads(result)
+            raise TypeError(f"Unexpected MCP tool result type: {type(result)!r}")
 
         return asyncio.run(_run())
 

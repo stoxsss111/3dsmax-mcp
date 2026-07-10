@@ -2,9 +2,9 @@ import json
 import unittest
 from unittest.mock import patch
 
+from src.helpers.error_hints import suggest_tools_for_maxscript
 from src.tools.execute import (
     _MAXSCRIPT_ERROR_SENTINEL,
-    _suggest_tools,
     execute_maxscript,
 )
 
@@ -44,7 +44,7 @@ class ExecuteMaxScriptHintTests(unittest.TestCase):
         self.assertIn("introspect_osl", payload["hint"]["suggested_tools"])
 
     def test_uberbitmap_filename_triggers_osl_hint(self) -> None:
-        suggestions = _suggest_tools('uber = UberBitmap2.osl; uber.filename = "foo.png"')
+        suggestions = suggest_tools_for_maxscript('uber = UberBitmap2.osl; uber.filename = "foo.png"')
         self.assertIn("introspect_osl", suggestions)
 
     def test_unrelated_script_emits_no_hint(self) -> None:
@@ -55,11 +55,11 @@ class ExecuteMaxScriptHintTests(unittest.TestCase):
         self.assertNotIn("hint", payload)
 
     def test_create_object_pattern_suggests_create_object(self) -> None:
-        suggestions = _suggest_tools("Box width:10 length:10 height:10")
+        suggestions = suggest_tools_for_maxscript("Box width:10 length:10 height:10")
         self.assertIn("create_object", suggestions)
 
     def test_material_assignment_suggests_assign_material(self) -> None:
-        suggestions = _suggest_tools("$Box001.material = mat")
+        suggestions = suggest_tools_for_maxscript("$Box001.material = mat")
         self.assertIn("assign_material", suggestions)
 
 

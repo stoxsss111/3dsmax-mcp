@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <units.h>
 
 using namespace HandlerHelpers;
 
@@ -103,6 +104,44 @@ json SpaceJson() {
         { "upAxis", "Z" },
         { "groundPlane", "XY" },
         { "rightHanded", true },
+        { "distanceBase", "system units" },
+    };
+}
+
+static const char* SystemUnitName(int type) {
+    switch (type) {
+    case UNITS_INCHES: return "inches";
+    case UNITS_FEET: return "feet";
+    case UNITS_MILES: return "miles";
+    case UNITS_MILLIMETERS: return "millimeters";
+    case UNITS_CENTIMETERS: return "centimeters";
+    case UNITS_METERS: return "meters";
+    case UNITS_KILOMETERS: return "kilometers";
+    default: return "unknown";
+    }
+}
+
+static const char* UnitDisplayName(int type) {
+    switch (type) {
+    case UNITDISP_GENERIC: return "generic";
+    case UNITDISP_METRIC: return "metric";
+    case UNITDISP_US: return "us";
+    case UNITDISP_CUSTOM: return "custom";
+    default: return "unknown";
+    }
+}
+
+json UnitsJson() {
+    int systemType = UNITS_INCHES;
+    float systemScale = 1.0f;
+    GetSystemUnitInfo(&systemType, &systemScale);
+
+    return {
+        { "distanceBase", "system units" },
+        { "systemType", SystemUnitName(systemType) },
+        { "systemTypeId", systemType },
+        { "systemScale", systemScale },
+        { "displayType", UnitDisplayName(GetUnitDisplayType()) },
     };
 }
 
@@ -162,6 +201,7 @@ json NodeOrientationJson(INode* node, TimeValue t) {
 
     json out;
     out["name"] = WideToUtf8(node->GetName());
+    out["handle"] = NodeHandle(node);
     out["class"] = os.obj ? WideToUtf8(os.obj->ClassName().data()) : "Unknown";
     out["parent"] = (parent && !parent->IsRootNode()) ? json(WideToUtf8(parent->GetName())) : json(nullptr);
     out["pivot"] = PointJson(pivot);
@@ -217,6 +257,7 @@ json BuildSpatialSnapshot(INode* node, TimeValue t, const std::string& typeHint)
 
     json result;
     result["name"] = nodeJson["name"];
+    result["handle"] = nodeJson["handle"];
     result["class"] = nodeJson["class"];
     result["pivot"] = nodeJson["pivot"];
     result["bbox"] = nodeJson["bbox"];
@@ -225,6 +266,7 @@ json BuildSpatialSnapshot(INode* node, TimeValue t, const std::string& typeHint)
     result["localAxesWorld"] = nodeJson["localAxesWorld"];
     result["axes"] = TypeAxisHints(axisType);
     result["space"] = SpaceJson();
+    result["units"] = UnitsJson();
     return result;
 }
 

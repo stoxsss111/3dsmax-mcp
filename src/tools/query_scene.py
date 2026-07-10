@@ -24,15 +24,20 @@ def query_scene(
     max_roots: int = 50,
     max_items: int = 50,
     capture: bool = False,
+    unchanged_since: int = 0,
 ) -> str:
     """Unified scene query. action: overview | filter | class | property | selection | delta.
+
+    Use when: reading scene state, finding nodes, checking selection, or verifying edits (delta).
+    Not when: deep single-object dumps (inspect_object), bridge diagnosis (get_bridge_status),
+    or bundling bridge+capabilities+scene (get_session_context — on demand only).
 
     overview — counts, materials, modifiers, layers, roots (max_roots)
     filter — paginated node list (class_name, pattern, layer, limit, offset, roots_only)
     class — find class instances (class_name, scope=nodes|refs|auto, superclass, limit)
     property — find objects by property (property_name, property_value, class_filter)
     selection — current selection (detail=compact|full, max_items)
-    delta — changes since last baseline (capture=true to reset)
+    delta — changes since last baseline (capture=true to reset; unchanged_since=N for cheap journal no-op)
     """
     return dispatch_query_scene(
         client,
@@ -52,4 +57,5 @@ def query_scene(
         max_roots=max_roots,
         max_items=max_items,
         capture=capture,
+        unchanged_since=unchanged_since,
     )

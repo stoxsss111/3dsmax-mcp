@@ -34,7 +34,11 @@ def _legacy_bridge_status() -> str:
 
 @mcp.tool()
 def get_bridge_status() -> str:
-    """Ping the MCP bridge for protocol/transport metadata. Use when diagnosing connection errors, not as a session preamble."""
+    """Ping the MCP bridge for protocol/transport metadata.
+
+    Use when: a tool failed with a connection/transport/claim error and you need to diagnose.
+    Not when: starting a session or before every task — prefer query_scene for scene work.
+    """
     try:
         response = client.send_command("", cmd_type="ping", timeout=5.0)
     except RuntimeError as exc:

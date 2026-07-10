@@ -2,7 +2,7 @@ import json as _json
 import re
 
 from ..server import mcp, client
-from ..coerce import FloatList, StrList
+from ..coerce import FloatList, IntList, StrList
 from src.helpers.maxscript import safe_string
 from src.helpers.spatial import (
     apply_pos_mode_fix_maxscript,
@@ -66,15 +66,24 @@ def _finalize_create_result(
 
 
 @mcp.tool()
-def get_object_properties(name: str) -> str:
-    """Get compact properties of a named object in the 3ds Max scene."""
+def get_object_properties(name: str = "", handle: int = 0) -> str:
+    """Get compact properties of a named object (transform, class, material name).
+
+    Use when: you need a small property snapshot for one known object.
+    Not when: searching the scene (query_scene) or a deep exploratory dump (inspect_object).
+    """
     if client.native_available:
         try:
-            params = _json.dumps({"name": name})
-            response = client.send_command(params, cmd_type="native:get_object_properties")
+            params = {"name": name}
+            if handle:
+                params["handle"] = handle
+            response = client.send_command(_json.dumps(params), cmd_type="native:get_object_properties")
             return response.get("result", "{}")
         except RuntimeError:
             pass
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     # ── MAXScript fallback (TCP) ──────────────────────────────────
     safe = safe_string(name)
@@ -146,15 +155,21 @@ def get_object_properties(name: str) -> str:
 
 
 @mcp.tool()
-def set_object_property(name: str, property: str, value: str) -> str:
+def set_object_property(name: str = "", property: str = "", value: str = "", handle: int = 0) -> str:
     """Set a property on a named object in the 3ds Max scene."""
     if client.native_available:
         try:
-            params = _json.dumps({"name": name, "property": property, "value": value})
+            params = {"name": name, "property": property, "value": value}
+            if handle:
+                params["handle"] = handle
+            params = _json.dumps(params)
             response = client.send_command(params, cmd_type="native:set_object_property")
             return response.get("result", "")
         except RuntimeError:
             pass
+
+    if not name:
+        return "Object name is required for TCP fallback"
 
     # ── MAXScript fallback (TCP) ──────────────────────────────────
     safe = safe_string(name)
@@ -344,15 +359,20 @@ def create_object(
 
 
 @mcp.tool()
-def delete_objects(names: StrList) -> str:
+def delete_objects(names: StrList | None = None, handles: IntList | None = None, dry_run: bool = False) -> str:
     """Delete objects from the 3ds Max scene by name."""
+    names = names or []
+    handles = handles or []
     if client.native_available:
         try:
-            params = _json.dumps({"names": names})
+            params = _json.dumps({"names": names, "handles": handles, "dry_run": dry_run})
             response = client.send_command(params, cmd_type="native:delete_objects")
             return response.get("result", "")
         except RuntimeError:
             pass
+
+    if not names:
+        return "Object names are required for TCP fallback"
 
     # ── MAXScript fallback (TCP) ──────────────────────────────────
     name_checks = [f'"{safe_string(n)}"' for n in names]
@@ -365,13 +385,13 @@ def delete_objects(names: StrList) -> str:
         for n in nameList do (
             local obj = getNodeByName n
             if obj != undefined then (
-                delete obj
+                if not {str(dry_run).lower()} do delete obj
                 append deleted n
             ) else (
                 append notFound n
             )
         )
-        local result = "Deleted: " + (deleted as string)
+        local result = (if {str(dry_run).lower()} then "Would delete: " else "Deleted: ") + (deleted as string)
         if notFound.count > 0 then
             result += " | Not found: " + (notFound as string)
         result
