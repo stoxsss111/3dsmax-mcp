@@ -208,6 +208,7 @@ SPECIALTY_TOOL_MODULES = (
     "data_channel",
     "effects",
     "floor_plan",
+    "fstorm_converter",
     "railclone",
     "render",
     "render_automations",
