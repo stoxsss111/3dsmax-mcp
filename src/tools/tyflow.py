@@ -7,6 +7,7 @@ from src.helpers.maxscript import safe_string
 
 from ..server import client, mcp
 from ..coerce import StrList, FloatList, IntList, DictList
+from ._tyflow_core import ledger_update
 
 
 SHAPE_3D_IDS: dict[str, int] = {
@@ -79,28 +80,37 @@ fn jsonStringArray arr =
     s
 )
 
+fn mcpTyChildByName parent childName =
+(
+    -- tyFlow dispatch exposes spaced names underscored (Send Out -> .Send_Out):
+    -- try the name as given, then the underscored form.
+    if parent == undefined then return undefined
+    local sub = undefined
+    local sym = undefined
+    try (sym = execute ("#'" + childName + "'")) catch ()
+    if sym != undefined do (try (sub = parent[sym]) catch ())
+    if sub == undefined do (
+        local alt = substituteString childName " " "_"
+        if alt != childName do (
+            local sym2 = undefined
+            try (sym2 = execute ("#'" + alt + "'")) catch ()
+            if sym2 != undefined do (try (sub = parent[sym2]) catch ())
+        )
+    )
+    sub
+)
+
 fn findEventSubAnim flowNode eventName =
 (
     if flowNode == undefined then return undefined
     local bo = flowNode.baseobject
     if bo == undefined then return undefined
-    local evSym = undefined
-    try (evSym = execute ("#'" + eventName + "'")) catch ()
-    if evSym == undefined then return undefined
-    local ev = undefined
-    try (ev = bo[evSym]) catch ()
-    ev
+    mcpTyChildByName bo eventName
 )
 
 fn findOperatorSubAnim eventSub operatorName =
 (
-    if eventSub == undefined then return undefined
-    local opSym = undefined
-    try (opSym = execute ("#'" + operatorName + "'")) catch ()
-    if opSym == undefined then return undefined
-    local op = undefined
-    try (op = eventSub[opSym]) catch ()
-    op
+    mcpTyChildByName eventSub operatorName
 )
 """
 
@@ -270,6 +280,13 @@ if tyFlow == undefined then (
 )
 )"""
     payload = _send_json(maxscript, {"error": "Could not parse create_tyflow response."})
+    if isinstance(payload, dict) and "name" in payload and "error" not in payload:
+        record_ops: dict[str, str] = {}
+        for idx, op in enumerate(op_defs, start=1):
+            op_type = str(op.get("type", "Birth"))
+            op_name = str(op.get("name", op.get("type", f"Operator{idx}")))
+            record_ops[f"{event_name}/{op_name}"] = op_type
+        payload.update(ledger_update(str(payload["name"]), record_ops=record_ops))
     if select_created and isinstance(payload, dict) and "name" in payload and "error" not in payload:
         payload["selectResult"] = select_objects(names=[str(payload["name"])])
     return json.dumps(payload)
@@ -560,7 +577,10 @@ if flow == undefined then (
     "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"event\\":\\"" + (esc ev.getName()) + "\\"}}"
 )
 )"""
-    return json.dumps(_send_json(maxscript, {"error": "Could not parse add_tyflow_event response."}))
+    payload = _send_json(maxscript, {"error": "Could not parse add_tyflow_event response."})
+    if isinstance(payload, dict) and "error" not in payload:
+        payload.update(ledger_update(name))
+    return json.dumps(payload)
 
 
 @mcp.tool()
@@ -599,7 +619,10 @@ if flow == undefined then (
     )
 )
 )"""
-    return json.dumps(_send_json(maxscript, {"error": "Could not parse modify_tyflow_operator response."}))
+    payload = _send_json(maxscript, {"error": "Could not parse modify_tyflow_operator response."})
+    if isinstance(payload, dict) and "error" not in payload:
+        payload.update(ledger_update(name))
+    return json.dumps(payload)
 
 
 @mcp.tool()
@@ -651,7 +674,12 @@ if flow == undefined then (
     )
 )
 )"""
-    return json.dumps(_send_json(maxscript, {"error": "Could not parse set_tyflow_shape response."}))
+    payload = _send_json(maxscript, {"error": "Could not parse set_tyflow_shape response."})
+    if isinstance(payload, dict) and "error" not in payload:
+        payload.update(
+            ledger_update(name, record_ops={f"{event_name}/{operator_name}": "Shape"})
+        )
+    return json.dumps(payload)
 
 
 @mcp.tool()
@@ -662,47 +690,77 @@ def connect_tyflow_events(
     send_out_operator_name: str = "Send Out",
     create_if_missing: bool = True,
 ) -> str:
-    """Connect events with Send Out by applying common destination property candidates."""
+    """Connect events via Send Out using tyFlow's documented connect API.
+
+    Records the edge in the wiring ledger on the flow node (wiring is not
+    readable back from tyFlow — the ledger is the source of truth for edges).
+    """
     maxscript = f"""(
 {HELPERS}
 local flow = getNodeByName "{safe_string(name)}"
 if flow == undefined then (
     "{{\\"error\\":\\"Object not found: {safe_string(name)}\\"}}"
 ) else (
+    local err = ""
+    local created = false
     local src = findEventSubAnim flow "{safe_string(from_event)}"
     local dst = findEventSubAnim flow "{safe_string(to_event)}"
-    if src == undefined then (
-        "{{\\"error\\":\\"Source event not found: {safe_string(from_event)}\\"}}"
-    ) else if dst == undefined then (
-        "{{\\"error\\":\\"Destination event not found: {safe_string(to_event)}\\"}}"
+    if src == undefined do err = "Source event not found: {safe_string(from_event)}"
+    if err == "" and dst == undefined do err = "Destination event not found: {safe_string(to_event)}"
+    local sendOp = undefined
+    if err == "" do (
+        sendOp = findOperatorSubAnim src "{safe_string(send_out_operator_name)}"
+        if sendOp == undefined and {str(bool(create_if_missing)).lower()} do (
+            local srcReal = undefined
+            try (srcReal = src.object) catch ()
+            if srcReal == undefined do srcReal = src
+            try (
+                sendOp = srcReal.Event.addOperator "Send Out" -1
+                sendOp.Operator.setName "{safe_string(send_out_operator_name)}"
+                created = true
+            ) catch (err = getCurrentException())
+        )
+        if err == "" and sendOp == undefined do err = "Send Out operator not found: {safe_string(send_out_operator_name)}"
+    )
+    if err == "" do (
+        local realOp = undefined
+        try (realOp = sendOp.object) catch ()
+        if realOp == undefined do realOp = sendOp
+        local realTarget = undefined
+        try (realTarget = dst.object) catch ()
+        if realTarget == undefined do err = "Could not resolve event handle: {safe_string(to_event)}"
+        if err == "" do (
+            try (realOp.connect realTarget) catch (err = getCurrentException())
+        )
+    )
+    if err == "" then (
+        "{{\\"ok\\":true,\\"created\\":" + (created as string) + "}}"
     ) else (
-        local sendOp = findOperatorSubAnim src "{safe_string(send_out_operator_name)}"
-        if sendOp == undefined and {str(bool(create_if_missing)).lower()} then (
-            local srcI = undefined
-            try (srcI = src.Event) catch ()
-            if srcI != undefined then (
-                sendOp = srcI.addOperator "Send Out" -1
-                try (sendOp.Operator.setName "{safe_string(send_out_operator_name)}") catch ()
-            )
-        )
-        if sendOp == undefined then (
-            "{{\\"error\\":\\"Send Out operator not found\\"}}"
-        ) else (
-            local applied = #()
-            local errors = #()
-            local props = #("eventName", "targetEvent", "nextEvent", "destinationEvent")
-            for pName in props do (
-                local pSym = execute ("#" + pName)
-                if isProperty sendOp pSym then (
-                    try (setProperty sendOp pSym "{safe_string(to_event)}"; append applied pName) catch (append errors ("Could not set " + pName))
-                )
-            )
-            "{{\\"name\\":\\"" + (esc flow.name) + "\\",\\"fromEvent\\":\\"{safe_string(from_event)}\\",\\"toEvent\\":\\"{safe_string(to_event)}\\",\\"operator\\":\\"{safe_string(send_out_operator_name)}\\",\\"applied\\":" + (jsonStringArray applied) + ",\\"errors\\":" + (jsonStringArray errors) + "}}"
-        )
+        "{{\\"error\\":\\"" + (esc (err as string)) + "\\"}}"
     )
 )
 )"""
-    return json.dumps(_send_json(maxscript, {"error": "Could not parse connect_tyflow_events response."}))
+    payload = _send_json(maxscript, {"error": "Could not parse connect_tyflow_events response."})
+    if not isinstance(payload, dict) or "error" in payload:
+        return json.dumps(payload if isinstance(payload, dict) else {"error": "Unexpected connect response."})
+    created = bool(payload.get("created"))
+    result: dict[str, Any] = {
+        "name": name,
+        "fromEvent": from_event,
+        "toEvent": to_event,
+        "operator": send_out_operator_name,
+        "connected": True,
+        "createdSendOut": created,
+    }
+    record_ops = {f"{from_event}/{send_out_operator_name}": "Send Out"} if created else None
+    result.update(
+        ledger_update(
+            name,
+            replace_edge=(from_event, send_out_operator_name, to_event),
+            record_ops=record_ops,
+        )
+    )
+    return json.dumps(result)
 
 
 @mcp.tool()
@@ -758,7 +816,12 @@ if flow == undefined then (
     )
 )
     )"""
-    return json.dumps(_send_json(maxscript, {"error": "Could not parse add_tyflow_collision response."}))
+    payload = _send_json(maxscript, {"error": "Could not parse add_tyflow_collision response."})
+    if isinstance(payload, dict) and "error" not in payload:
+        payload.update(
+            ledger_update(name, record_ops={f"{event_name}/{operator_name}": "Collision"})
+        )
+    return json.dumps(payload)
 
 
 @mcp.tool()
@@ -827,7 +890,13 @@ if flow == undefined then (
     )
 )
 )"""
-    return json.dumps(_send_json(maxscript, {"error": "Could not parse remove_tyflow_element response."}))
+    payload = _send_json(maxscript, {"error": "Could not parse remove_tyflow_element response."})
+    if isinstance(payload, dict) and "error" not in payload:
+        if payload.get("removed") == "event":
+            payload.update(ledger_update(name, remove_event=event_name))
+        elif payload.get("removed") == "operator":
+            payload.update(ledger_update(name, remove_operator=(event_name, operator_name)))
+    return json.dumps(payload)
 
 
 @mcp.tool()

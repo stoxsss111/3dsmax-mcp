@@ -3,8 +3,6 @@ import os
 import tempfile
 from typing import Any
 
-from mcp.server.fastmcp import Image
-
 from ..server import mcp, client
 from ..coerce import StrList
 
@@ -13,6 +11,13 @@ COMMS_DIR = os.path.join(tempfile.gettempdir(), "3dsmax-mcp")
 DEFAULT_MAX_BYTES = 1_000_000
 DEFAULT_MAX_WIDTH = 1600
 DEFAULT_MIN_WIDTH = 640
+
+# Inline base64 gets JSON-encoded into the envelope's text result, which MCP
+# clients cannot render as an image and which overflows their tool-output limit.
+_INLINE_DISABLED_HINT = {
+    "message": "return_image is deprecated and ignored: inline base64 overflows "
+    "MCP clients. The capture is saved to `file` — read that path to view it."
+}
 
 
 def _normalize_path(path: str) -> str:
@@ -31,23 +36,19 @@ def _image_file_result(
     width: int | None = None,
     height: int | None = None,
     inline: bool = False,
-    image_format: str | None = None,
-) -> dict[str, Any] | Image:
-    normalized_path = _normalize_path(path)
-    if inline:
-        img_data = _read_image_bytes(path)
-        return Image(data=img_data, format=image_format or mime_type.rsplit("/", 1)[-1])
-
+) -> dict[str, Any]:
     result: dict[str, Any] = {
         "type": "image_file",
-        "file": normalized_path,
+        "file": _normalize_path(path),
         "mime_type": mime_type,
-        "size_bytes": os.path.getsize(normalized_path),
+        "size_bytes": os.path.getsize(_normalize_path(path)),
     }
     if width is not None:
         result["width"] = int(width)
     if height is not None:
         result["height"] = int(height)
+    if inline:
+        result["hint"] = _INLINE_DISABLED_HINT
     return result
 
 
@@ -122,7 +123,10 @@ def capture_viewport(
     max_height: int = 0,
     return_image: bool = False,
 ) -> Any:
-    """Capture the current 3ds Max viewport to a file and return compact metadata.
+    """Capture the current 3ds Max viewport and return the saved file path.
+
+    Read the returned `file` path to view the capture. return_image is
+    deprecated and ignored — the image is never inlined.
 
     Use when: quick visual proof after a scene change.
     Not when: the user asked for a full render (render_scene) or a multi-angle grid
@@ -143,7 +147,6 @@ def capture_viewport(
                 width=data.get("width"),
                 height=data.get("height"),
                 inline=return_image,
-                image_format="png",
             )
 
     capture_path = os.path.join(COMMS_DIR, "viewport_capture.png").replace("\\", "/")
@@ -152,7 +155,6 @@ def capture_viewport(
         capture_path,
         mime_type="image/png",
         inline=return_image,
-        image_format="png",
     )
 
 
@@ -166,7 +168,11 @@ def capture_screen(
     min_width: int = DEFAULT_MIN_WIDTH,
     return_image: bool = False,
 ) -> Any:
-    """Capture fullscreen to a file only when explicitly enabled."""
+    """Capture fullscreen to a file only when explicitly enabled.
+
+    Read the returned `file` path to view the capture. return_image is
+    deprecated and ignored — the image is never inlined.
+    """
     if not enabled:
         raise ValueError("capture_screen is disabled by default; set enabled=True to allow fullscreen capture")
 
@@ -185,7 +191,6 @@ def capture_screen(
                 width=data.get("width"),
                 height=data.get("height"),
                 inline=return_image,
-                image_format="jpeg",
             )
 
     max_bytes = max(0, int(max_bytes))
@@ -209,14 +214,15 @@ def capture_screen(
             img_data = _read_image_bytes(capture_path)
             attempts += 1
 
-    if return_image:
-        return Image(data=img_data, format="jpeg")
-    return {
+    result: dict[str, Any] = {
         "type": "image_file",
         "file": _normalize_path(capture_path),
         "mime_type": "image/jpeg",
         "size_bytes": len(img_data),
     }
+    if return_image:
+        result["hint"] = _INLINE_DISABLED_HINT
+    return result
 
 
 @mcp.tool()
@@ -227,6 +233,9 @@ def capture_multi_view(
     return_image: bool = False,
 ) -> Any:
     """Capture multiple viewport angles to a stitched file and return compact metadata.
+
+    Read the returned `file` path to view the grid. return_image is deprecated
+    and ignored — the image is never inlined.
 
     Use when: verifying scene changes from several angles (preferred after meaningful edits).
     Not when: a single active viewport is enough (capture_viewport) or the user asked to render.
@@ -248,9 +257,7 @@ def capture_multi_view(
         width=data.get("width"),
         height=data.get("height"),
         inline=return_image,
-        image_format="png",
     )
-    if isinstance(result, dict):
-        result["views"] = data.get("views")
-        result["grid"] = data.get("grid")
+    result["views"] = data.get("views")
+    result["grid"] = data.get("grid")
     return result

@@ -9,6 +9,78 @@ def test_max_year_for_reads_standard_install_folder_names() -> None:
     assert install.max_year_for(Path(r"C:\weird\Max")) is None
 
 
+def test_legacy_install_paths_returns_old_format_files() -> None:
+    max_dir = Path(r"D:\Max\3ds Max 2025")
+    assert install.legacy_install_paths(max_dir) == [
+        max_dir / "plugins" / "mcp_bridge.gup",
+        max_dir / "scripts" / "mcp" / "mcp_server.ms",
+        max_dir / "scripts" / "startup" / "mcp_autostart.ms",
+    ]
+
+
+def test_remove_legacy_installations_deletes_files(monkeypatch, tmp_path: Path) -> None:
+    max_dir = tmp_path / "3ds Max 2025"
+    for rel in (
+        "plugins/mcp_bridge.gup",
+        "scripts/mcp/mcp_server.ms",
+        "scripts/startup/mcp_autostart.ms",
+    ):
+        path = max_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("legacy", encoding="utf-8")
+
+    monkeypatch.setattr(install, "find_max_installations", lambda: [max_dir])
+    assert install.remove_legacy_installations()
+    assert all(not path.exists() for path in install.legacy_install_paths(max_dir))
+
+
+def test_remove_legacy_installations_fails_when_files_remain(monkeypatch, tmp_path: Path) -> None:
+    max_dir = tmp_path / "3ds Max 2025"
+    legacy = max_dir / "plugins" / "mcp_bridge.gup"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("locked", encoding="utf-8")
+
+    monkeypatch.setattr(install, "find_max_installations", lambda: [max_dir])
+    monkeypatch.setattr(install, "delete_elevated", lambda path: False)
+    assert not install.remove_legacy_installations()
+    assert legacy.exists()
+
+
+def test_package_contents_xml_uses_bin_paths_and_version() -> None:
+    xml = install.package_contents_xml("9.9.9")
+    assert 'AppVersion="9.9.9"' in xml
+    assert "./Contents/bin/mcp_bridge_2025.gup" in xml
+    assert "./Contents/scripts/mcp_server.ms" in xml
+    assert "plugins/" not in xml
+
+
+def test_stage_bundle_creates_expected_layout(monkeypatch, tmp_path: Path) -> None:
+    gup_dir = tmp_path / "native" / "bin"
+    gup_dir.mkdir(parents=True)
+    (gup_dir / "mcp_bridge_2025.gup").write_bytes(b"gup")
+
+    script_src = tmp_path / "maxscript" / "mcp_server.ms"
+    script_src.parent.mkdir(parents=True)
+    script_src.write_text("-- mcp", encoding="utf-8")
+
+    patched_gups = {
+        2025: gup_dir / "mcp_bridge_2025.gup",
+        **{year: tmp_path / f"missing_{year}.gup" for year in install.GUP_SRCS if year != 2025},
+    }
+    monkeypatch.setattr(install, "GUP_SRCS", patched_gups)
+    monkeypatch.setattr(install, "MS_SERVER", script_src)
+
+    dest = tmp_path / "bundle"
+    included, missing = install.stage_bundle(dest)
+
+    assert included == [2025]
+    assert 2023 in missing
+    assert (dest / "Contents" / "bin" / "mcp_bridge_2025.gup").exists()
+    assert (dest / "Contents" / "scripts" / "mcp_server.ms").exists()
+    contents = (dest / "PackageContents.xml").read_text(encoding="utf-8")
+    assert "./Contents/bin/mcp_bridge_2025.gup" in contents
+
+
 def test_max_year_for_uses_installer_env_var_for_custom_paths(monkeypatch, tmp_path: Path) -> None:
     custom = tmp_path / "custom-max"
     custom.mkdir()

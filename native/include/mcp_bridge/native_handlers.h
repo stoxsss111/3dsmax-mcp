@@ -38,6 +38,14 @@ namespace NativeHandlers {
     std::string MakeModifierUnique(const std::string& params, MCPBridgeGUP* gup);
     std::string SetModifierProperty(const std::string& params, MCPBridgeGUP* gup);
 
+    // Max Creation Graph scripted modifiers. These handlers deliberately use
+    // exact class IDs and typed PB2 node references instead of MAXScript class
+    // evaluation so a stale/colliding generated wrapper cannot be applied.
+    std::string MCGResolveClass(const std::string& params, MCPBridgeGUP* gup);
+    std::string MCGApplyModifier(const std::string& params, MCPBridgeGUP* gup);
+    std::string MCGSetNodeParameter(const std::string& params, MCPBridgeGUP* gup);
+    std::string MCGInspectInstance(const std::string& params, MCPBridgeGUP* gup);
+
     // Phase 3: Inspect & scene query
     std::string InspectObject(const std::string& params, MCPBridgeGUP* gup);
     std::string InspectProperties(const std::string& params, MCPBridgeGUP* gup);
@@ -46,6 +54,7 @@ namespace NativeHandlers {
     std::string GetInstances(const std::string& params, MCPBridgeGUP* gup);
     std::string GetDependencies(const std::string& params, MCPBridgeGUP* gup);
     std::string GetMaterialSlots(const std::string& params, MCPBridgeGUP* gup);
+    std::string GetMaterialLibrary(const std::string& params, MCPBridgeGUP* gup);
     std::string WriteOSLShader(const std::string& params, MCPBridgeGUP* gup);
     std::string InspectMaterialNetwork(const std::string& params, MCPBridgeGUP* gup);
     std::string ReplicateMaterial(const std::string& params, MCPBridgeGUP* gup);
@@ -67,9 +76,7 @@ namespace NativeHandlers {
     std::string CaptureMultiView(const std::string& params, MCPBridgeGUP* gup);
     std::string CaptureViewport(const std::string& params, MCPBridgeGUP* gup);
     std::string CaptureScreen(const std::string& params, MCPBridgeGUP* gup);
-
-    // Advanced Vision overlay
-    std::string AdvancedVision(const std::string& params, MCPBridgeGUP* gup);
+    std::string IsolateAndCaptureSelected(const std::string& params, MCPBridgeGUP* gup);
 
     // Phase 6: Material writes
     std::string AssignMaterial(const std::string& params, MCPBridgeGUP* gup);
@@ -78,9 +85,11 @@ namespace NativeHandlers {
 
     // Shell material creation
     std::string CreateShellMaterial(const std::string& params, MCPBridgeGUP* gup);
+    std::string BackupMaterialLibrary(const std::string& params, MCPBridgeGUP* gup);
 
     // Plugin enumeration
     std::string ListPluginClasses(const std::string& params, MCPBridgeGUP* gup);
+    std::string GetPluginCapabilities(const std::string& params, MCPBridgeGUP* gup);
 
     // Controller / track inspection
     std::string InspectTrackView(const std::string& params, MCPBridgeGUP* gup);
@@ -160,4 +169,7 @@ namespace NativeHandlers {
     // Live tool smoke testing (in-Max production path)
     std::string InvokeTool(const std::string& params, MCPBridgeGUP* gup);
     std::string RunToolSmoke(const std::string& params, MCPBridgeGUP* gup);
+
+    // Main-thread (UI) hygiene: list what runs on the main thread and kill hooks
+    std::string MainThread(const std::string& params, MCPBridgeGUP* gup);
 }

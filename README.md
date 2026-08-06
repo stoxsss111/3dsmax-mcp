@@ -1,17 +1,20 @@
 # 3dsmax-mcp
 
 <p align="left">
-  <img src="./images/logo.png" alt="3dsmax-mcp logo" width="220" style="background-color: #ffffff; padding: 16px; border-radius: 8px;">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./images/logo-white.png">
+    <img src="./images/logo.png" alt="3dsmax-mcp logo" width="600">
+  </picture>
 </p>
 
-Connect AI agents to Autodesk 3ds Max through the [Model Context Protocol](https://modelcontextprotocol.io). Ask in natural language; the agent creates objects, builds materials, inspects plugins with dedicated MCP tools instead of MAXScript/Python feedback loops.
-Built-in installer works with Cursor, Claude, Codex and Gemini.
+Connect AI agents to Autodesk 3ds Max through the [Model Context Protocol](https://modelcontextprotocol.io).
+Ask in natural language; the agent creates objects, builds materials, inspects plugins with dedicated MCP tools instead of MAXScript/Python feedback loops.
 
-**Current release: 1.2.0** — see [CHANGELOG.md](CHANGELOG.md).
+**Current release: 1.5.0** — see [CHANGELOG.md](docs/CHANGELOG.md).
 
 ## Features
 
-- **115 MCP tools** — (79 in core profile) for scene reads, materials, modifiers, controllers, viewport capture, and plugin workflows.
+- **151 MCP tools** — (87 in core profile) for scene reads, materials, modifiers, controllers, viewport capture, procedural graphs, and plugin workflows.
 - **Native Bridge** — only 2023-2027 versions.
 - **Introspection** — discover arbitrary Max classes for all kinds of automation and scripting purposes. 
 - **Bundled agent skill** — There is a bundled maxscript documentation if you want to create your own tools.
@@ -32,8 +35,6 @@ uv run python install.py
 ```
 
 Restart 3ds Max, then connect your MCP client. The installer registers the server where it can; see [Advanced configuration](docs/ADVANCED.md) for manual client setup.
-
-I personally use Cursor and Codex.
 
 **Update an existing install:**
 
@@ -88,6 +89,15 @@ uv run python install.py
 | `set_modifier_property` | Set a modifier parameter on one or many objects |
 | `collapse_modifier_stack` | Collapse the stack |
 | `make_modifier_unique` | De-instance a shared modifier |
+| `inspect_modifier_properties` | Compatibility alias for `inspect_properties(target="modifier")` |
+
+### Modeling
+
+| Tool | Description |
+|------|-------------|
+| `boolean_operation` | Apply, inspect, retune, rename, or extract Boolean modifier operands; supports inline repeated cutters |
+| `draw_spline` | Create, read, and edit spline shapes from explicit world-space points and knots |
+| `edit_vertices` | Read, move, set, or conform Editable Poly vertices in world space |
 
 ### Materials & textures
 
@@ -125,6 +135,7 @@ uv run python install.py
 | `map_class_relationships` | ParamBlock2 reference relationships between classes |
 | `watch_scene` | Live event watcher for interactive sessions |
 | `isolate_and_capture_selected` | Per-selection isolated viewport captures |
+| `main_thread` | Inspect or clean up callbacks and timers running on Max's main/UI thread |
 
 ### Plugins & introspection
 
@@ -152,6 +163,7 @@ MCP resources: `resource://3dsmax-mcp/plugins/{name}/manifest|guide|recipes|gotc
 | `inspect_track_view` | Track View-style controller hierarchy |
 | `set_controller_props` | Edit script text or controller properties |
 | `add_controller_target` | Add a target to script/expression/constraint controllers |
+| `keyframe_tracks` | Inspect and edit keyed tracks, match poses, close loops, and configure tangent/out-of-range behavior |
 
 ### Parameter wiring
 
@@ -170,6 +182,7 @@ MCP resources: `resource://3dsmax-mcp/plugins/{name}/manifest|guide|recipes|gotc
 | `manage_groups` | Create, ungroup, open, close, attach, detach groups |
 | `manage_selection_sets` | Named selection sets |
 | `manage_scene` | Hold, fetch, reset, save, scene info |
+| `undo_last` | Undo the last 3ds Max scene operation |
 
 ### Viewport & render
 
@@ -179,6 +192,7 @@ MCP resources: `resource://3dsmax-mcp/plugins/{name}/manifest|guide|recipes|gotc
 | `capture_multi_view` | Front/right/back/top grid stitched into one image |
 | `capture_screen` | Fullscreen capture (explicit opt-in) |
 | `render_scene` | Render the current view |
+| `render_automations` | Arm a completion signal for the next render, then poll or wait for it to finish |
 
 ### External `.max` files
 
@@ -199,20 +213,42 @@ MCP resources: `resource://3dsmax-mcp/plugins/{name}/manifest|guide|recipes|gotc
 | `get_state_sets` | State Sets with camera assignments |
 | `get_camera_sequence` | Camera-assigned State Sets sorted by frame |
 
-> **Work in progress** — the plugin and layout integrations below (Data Channel, tyFlow, Forest Pack, RailClone, Floor plan) are early-stage and may be incomplete or change between releases. Everything listed above is stable.
-
-### Data Channel (WIP)
+### Data Channel
 
 | Tool | Description |
 |------|-------------|
+| `list_dc_operators` | Search the live version-specific operator catalog |
+| `list_dc_presets` | List installed Data Channel presets |
 | `add_data_channel` | Append operators to a Data Channel modifier stack |
-| `inspect_data_channel` | Read the operator graph |
-| `set_data_channel_operator` | Set properties on one operator |
-| `add_dc_script_operator` | Add a MAXScript operator |
-| `list_dc_presets` | List available presets |
+| `inspect_data_channel` | Read the active stack in visible processing order |
+| `set_data_channel_operator` | Edit one visible operator with rollback on failure |
+| `manage_data_channel_stack` | Delete, enable, disable, or safely reorder operators |
 | `load_dc_preset` | Load a preset into the stack |
+| `add_dc_script_operator` | Add executable MAXScript with explicit authorization |
 
-### tyFlow (WIP)
+### Max Creation Graph
+
+| Tool | Description |
+|------|-------------|
+| `mcg_get_context` | Compiler, temporary workspace, templates, samples, and safety state |
+| `mcg_list_graphs` | List temporary, installed, or bundled sample graphs |
+| `mcg_inspect_graph` | Normalize graph metadata, nodes, connections, and parameters |
+| `mcg_search_operators` | Search live typed operators and offline compound references |
+| `mcg_create_graph` | Fork a read-only source into the temporary workspace |
+| `mcg_apply_patch` | Patch, compile, verify, checkpoint, and roll back transactionally |
+| `mcg_compile_graph` | Validate and compile one temporary graph with diagnostics |
+| `mcg_test_tool` | Create, inspect, and remove a disposable generated instance |
+| `mcg_resolve_class` | Resolve the exact generated modifier class descriptor |
+| `mcg_apply_modifier` | Compile and apply a typed MCG modifier safely |
+| `mcg_inspect_instance` | Verify graph identity and inspect a live MCG modifier |
+| `mcg_set_node_parameter` | Retarget one supported scalar node parameter |
+| `mcg_restore_checkpoint` | Restore an opaque checkpoint with hash protection |
+| `mcg_cleanup_workspace` | Remove one graph family or the temporary MCG workspace |
+| `mcg_reload_operators` | Explicitly refresh Max's global MCG operator depot |
+
+> **Work in progress** — the plugin and layout integrations below (tyFlow, Forest Pack, RailClone, Floor plan) are early-stage and may be incomplete or change between releases. Everything listed above is stable.
+
+### tyFlow
 
 | Tool | Description |
 |------|-------------|
@@ -220,6 +256,15 @@ MCP resources: `resource://3dsmax-mcp/plugins/{name}/manifest|guide|recipes|gotc
 | `create_tyflow` | Create tyFlow with events and operators |
 | `create_tyflow_preset` | Presets: rain, snow, fountain, burst, debris |
 | `get_tyflow_info` | Deep flow/event/operator readback |
+| `harvest_tyflow_manifest` | Probe and cache the installed tyFlow operator surface by tyFlow version |
+| `list_tyflow_operators` | Query the cached tyFlow operator manifest without touching Max |
+| `get_tyflow_graph` | Read events, operators, properties, ledger edges, and wiring staleness |
+| `tyflow_apply_patch` | Apply a batch of tyFlow graph operations as one verified transaction |
+| `connect_tyflow_operator` | Connect or retarget a test/Send Out operator to an event |
+| `disconnect_tyflow_operator` | Disconnect an operator output and remove its ledger edge |
+| `set_tyflow_wiring_ledger` | Reconcile recorded graph wiring after external or visual edits |
+| `tyflow_event_census` | Count particles per event at probe frames with temporary instrumentation |
+| `capture_tyflow_editor` | Open and capture the tyFlow editor for visual wire inspection |
 | `modify_tyflow_operator` | Edit operator properties |
 | `set_tyflow_shape` | Configure Shape operator |
 | `set_tyflow_physx` | Object-level PhysX settings |
@@ -277,5 +322,5 @@ The installer builds an agent skill from `skills/3dsmax-mcp-dev/SKILL.md` with t
 ## Further reading
 
 - **[Advanced configuration](docs/ADVANCED.md)** — architecture, safe mode, tool profiles, native builds, standalone chat (WIP)
-- **[CHANGELOG.md](CHANGELOG.md)** — release history
+- **[CHANGELOG.md](docs/CHANGELOG.md)** — release history
 - **[LICENSE](LICENSE)**

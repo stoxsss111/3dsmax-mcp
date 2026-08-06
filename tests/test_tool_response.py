@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from mcp.server.fastmcp.utilities.types import Image
@@ -97,6 +98,24 @@ class ToolResponseTests(unittest.TestCase):
         self.assertEqual(payload["error"]["type"], "MAXScriptError")
         self.assertEqual(payload["hint"]["suggested_tools"], ["introspect_osl"])
 
+    def test_envelope_preserves_structured_error_details(self) -> None:
+        raw = {
+            "status": "error",
+            "error_type": "MCGCompileError",
+            "error": "compile failed",
+            "details": {
+                "graph_id": "graph_123",
+                "diagnostics": "Unknown operator",
+                "rolled_back": True,
+            },
+        }
+        with patch.dict(os.environ, {"MCP_TRIPBACK_MODE": "minimal"}, clear=False):
+            payload = envelope_result(raw, elapsed_ms=0.1)
+
+        self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["error"]["details"]["graph_id"], "graph_123")
+        self.assertEqual(payload["error"]["details"]["rolled_back"], True)
+
     def test_envelope_normalizes_string_hint(self) -> None:
         raw = {"status": "error", "error": "nope", "hint": "try scope=refs"}
         with patch.dict(os.environ, {"MCP_TRIPBACK_MODE": "minimal"}, clear=False):
@@ -142,12 +161,34 @@ class ToolResponseTests(unittest.TestCase):
                 self.assertEqual(payload["ok"], False, raw)
                 self.assertEqual(payload["error"]["message"], raw)
 
-    def test_envelope_serializes_mcp_images(self) -> None:
+    def test_envelope_spills_mcp_images_to_files(self) -> None:
         payload = envelope_result(Image(data=b"abc", format="png"), elapsed_ms=0.0)
 
         self.assertEqual(payload["ok"], True)
-        self.assertEqual(payload["result"]["type"], "image")
+        self.assertEqual(payload["result"]["type"], "image_file")
         self.assertEqual(payload["result"]["mime_type"], "image/png")
+        self.assertNotIn("data", payload["result"])
+        spilled = Path(payload["result"]["file"])
+        self.addCleanup(lambda: spilled.exists() and spilled.unlink())
+        self.assertEqual(spilled.suffix, ".png")
+        self.assertEqual(spilled.read_bytes(), b"abc")
+
+    def test_envelope_inlines_small_bytes(self) -> None:
+        payload = envelope_result(b"abc", elapsed_ms=0.0)
+
+        self.assertEqual(payload["result"]["type"], "bytes")
+        self.assertEqual(payload["result"]["size"], 3)
+
+    def test_envelope_spills_large_bytes_to_files(self) -> None:
+        blob = b"x" * 100_000
+        payload = envelope_result(blob, elapsed_ms=0.0)
+
+        self.assertEqual(payload["result"]["type"], "bytes_file")
+        self.assertEqual(payload["result"]["size"], len(blob))
+        self.assertNotIn("data", payload["result"])
+        spilled = Path(payload["result"]["file"])
+        self.addCleanup(lambda: spilled.exists() and spilled.unlink())
+        self.assertEqual(spilled.read_bytes(), blob)
 
     def test_minimal_exception_omits_elapsed(self) -> None:
         with patch.dict(os.environ, {"MCP_TRIPBACK_MODE": "minimal"}, clear=False):

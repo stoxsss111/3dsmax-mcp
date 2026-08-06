@@ -119,13 +119,14 @@ static bool IsMutatingNativeHandler(const std::string& cmd_type) {
         "native:make_modifier_unique",
         "native:set_modifier_property",
         "native:batch_modify",
+        "native:mcg_apply_modifier",
+        "native:mcg_set_node_parameter",
         "native:replicate_material",
         "native:write_osl_shader",
         "native:set_parent",
         "native:batch_rename_objects",
         "native:manage_scene",
         "native:merge_from_file",
-        "native:advancedvision",
         "native:assign_material",
         "native:set_material_property",
         "native:set_material_properties",
@@ -212,10 +213,17 @@ static std::string NormalizeNativeError(const std::string& message) {
 class NativeUndoTransaction {
 public:
     explicit NativeUndoTransaction(const std::string& cmd_type)
-        : active_(true) {
+        : active_(false) {
+        // theHold is global and does not tolerate interleaved Begin/Accept
+        // pairs. If a hold is already open (user mid-operation, or any other
+        // code path), run without our own transaction rather than nesting —
+        // an Accept/Cancel here would commit or roll back someone else's
+        // restore records.
+        if (theHold.Holding()) return;
         std::wstring label = L"MCP " + HandlerHelpers::Utf8ToWide(cmd_type);
         label_ = MSTR(label.c_str());
         theHold.Begin();
+        active_ = true;
     }
 
     ~NativeUndoTransaction() {
@@ -476,6 +484,15 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::MakeModifierUnique(command, gup);
         } else if (cmd_type == "native:set_modifier_property" || cmd_type == "native:batch_modify") {
             result = NativeHandlers::SetModifierProperty(command, gup);
+        // Max Creation Graph scripted modifiers
+        } else if (cmd_type == "native:mcg_resolve_class") {
+            result = NativeHandlers::MCGResolveClass(command, gup);
+        } else if (cmd_type == "native:mcg_apply_modifier") {
+            result = NativeHandlers::MCGApplyModifier(command, gup);
+        } else if (cmd_type == "native:mcg_set_node_parameter") {
+            result = NativeHandlers::MCGSetNodeParameter(command, gup);
+        } else if (cmd_type == "native:mcg_inspect_instance") {
+            result = NativeHandlers::MCGInspectInstance(command, gup);
         // Phase 3: Inspect & scene query
         } else if (cmd_type == "native:inspect_object") {
             result = NativeHandlers::InspectObject(command, gup);
@@ -491,6 +508,8 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::GetDependencies(command, gup);
         } else if (cmd_type == "native:get_material_slots") {
             result = NativeHandlers::GetMaterialSlots(command, gup);
+        } else if (cmd_type == "native:get_material_library") {
+            result = NativeHandlers::GetMaterialLibrary(command, gup);
         } else if (cmd_type == "native:inspect_material_network") {
             result = NativeHandlers::InspectMaterialNetwork(command, gup);
         } else if (cmd_type == "native:replicate_material") {
@@ -522,8 +541,8 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::CaptureViewport(command, gup);
         } else if (cmd_type == "native:capture_screen") {
             result = NativeHandlers::CaptureScreen(command, gup);
-        } else if (cmd_type == "native:advancedvision") {
-            result = NativeHandlers::AdvancedVision(command, gup);
+        } else if (cmd_type == "native:isolate_and_capture_selected") {
+            result = NativeHandlers::IsolateAndCaptureSelected(command, gup);
         // Phase 6: Material writes
         } else if (cmd_type == "native:assign_material") {
             result = NativeHandlers::AssignMaterial(command, gup);
@@ -533,9 +552,13 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::SetMaterialProperties(command, gup);
         } else if (cmd_type == "native:create_shell_material") {
             result = NativeHandlers::CreateShellMaterial(command, gup);
+        } else if (cmd_type == "native:backup_material_library") {
+            result = NativeHandlers::BackupMaterialLibrary(command, gup);
         // Plugin enumeration
         } else if (cmd_type == "native:list_plugin_classes") {
             result = NativeHandlers::ListPluginClasses(command, gup);
+        } else if (cmd_type == "native:get_plugin_capabilities") {
+            result = NativeHandlers::GetPluginCapabilities(command, gup);
         // Controller / track inspection
         } else if (cmd_type == "native:inspect_track_view") {
             result = NativeHandlers::InspectTrackView(command, gup);
@@ -620,6 +643,8 @@ std::string CommandDispatcher::Dispatch(
             result = NativeHandlers::ListMacroscripts(command, gup);
         } else if (cmd_type == "native:list_action_tables") {
             result = NativeHandlers::ListActionTables(command, gup);
+        } else if (cmd_type == "native:main_thread") {
+            result = NativeHandlers::MainThread(command, gup);
         } else if (cmd_type == "native:introspect_interface") {
             result = NativeHandlers::IntrospectInterface(command, gup);
         } else if (cmd_type == "native:invoke_interface") {

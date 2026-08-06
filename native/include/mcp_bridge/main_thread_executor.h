@@ -4,6 +4,7 @@
 #include <string>
 #include <mutex>
 #include <condition_variable>
+#include <deque>
 #include <memory>
 #include <stdexcept>
 
@@ -48,6 +49,7 @@ public:
 
 private:
     static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
+    static void RunWorkItem(const std::shared_ptr<WorkItem>& item);
 
     HWND hwnd_ = nullptr;
     ATOM wndclass_atom_ = 0;
@@ -56,6 +58,16 @@ private:
 
     static thread_local bool tl_direct_mode_;
     static constexpr UINT WM_MCP_EXECUTE = WM_USER + 0x4D43;
+
+    // Re-entrancy guard. SDK calls inside a work item can run nested message
+    // pumps (progress UI, redraws, deferred plugin loads); without this guard
+    // a queued WM_MCP_EXECUTE gets dispatched in the MIDDLE of the running
+    // item, interleaving theHold transactions on the global undo system —
+    // observed as 0xC0000005 under concurrent mutating requests, followed by
+    // persistent scene-state corruption. Items arriving while one is running
+    // are deferred and drained after it completes. Main-thread-only state.
+    static bool s_executing_;
+    static std::deque<std::shared_ptr<WorkItem>> s_deferred_;
 
     // Per-process random secret. Sent in wParam alongside every
     // WM_MCP_EXECUTE so cross-process attackers can't smuggle pointers

@@ -4,6 +4,8 @@
 
 thread_local bool MainThreadExecutor::tl_direct_mode_ = false;
 WPARAM MainThreadExecutor::s_execute_cookie_ = 0;
+bool MainThreadExecutor::s_executing_ = false;
+std::deque<std::shared_ptr<MainThreadExecutor::WorkItem>> MainThreadExecutor::s_deferred_;
 
 MainThreadExecutor::~MainThreadExecutor() {
     Shutdown();
@@ -135,21 +137,41 @@ LRESULT CALLBACK MainThreadExecutor::WndProc(
         auto item = *raw;
         delete raw;
 
-        {
-            std::lock_guard<std::mutex> lock(item->mutex);
-            try {
-                item->result = item->work();
-            } catch (const std::exception& e) {
-                item->error = true;
-                item->error_message = e.what();
-            } catch (...) {
-                item->error = true;
-                item->error_message = "Unknown exception on main thread";
-            }
-            item->completed = true;
+        // Delivered by a nested message pump while another item is running
+        // (SDK work can pump: progress UI, redraws, deferred plugin loads).
+        // Running it here would interleave theHold transactions on the global
+        // undo system. Defer; the outer invocation drains after its item.
+        if (s_executing_) {
+            s_deferred_.push_back(std::move(item));
+            return 0;
         }
-        item->cv.notify_all();
+
+        s_executing_ = true;
+        RunWorkItem(item);
+        while (!s_deferred_.empty()) {
+            auto next = std::move(s_deferred_.front());
+            s_deferred_.pop_front();
+            RunWorkItem(next);
+        }
+        s_executing_ = false;
         return 0;
     }
     return DefWindowProc(hwnd, msg, wp, lp);
+}
+
+void MainThreadExecutor::RunWorkItem(const std::shared_ptr<WorkItem>& item) {
+    {
+        std::lock_guard<std::mutex> lock(item->mutex);
+        try {
+            item->result = item->work();
+        } catch (const std::exception& e) {
+            item->error = true;
+            item->error_message = e.what();
+        } catch (...) {
+            item->error = true;
+            item->error_message = "Unknown exception on main thread";
+        }
+        item->completed = true;
+    }
+    item->cv.notify_all();
 }

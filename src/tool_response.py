@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
-from base64 import b64encode
+from base64 import b64decode, b64encode
 from enum import Enum
 from functools import wraps
 from inspect import Parameter, Signature, signature
+from itertools import count
 from pathlib import Path
 from typing import Any, Callable, get_type_hints
 
@@ -144,6 +146,43 @@ def _coerce_warnings(result: Any) -> list[Any]:
     return []
 
 
+_SPILL_DIR = Path(tempfile.gettempdir()) / "3dsmax-mcp" / "payloads"
+_INLINE_BYTES_LIMIT = 8_192
+_SPILL_MAX_AGE_SECONDS = 24 * 60 * 60
+_MIME_EXTENSIONS = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+    "image/bmp": ".bmp",
+}
+_spill_counter = count()
+
+
+def _prune_spill_dir() -> None:
+    cutoff = time.time() - _SPILL_MAX_AGE_SECONDS
+    try:
+        entries = list(_SPILL_DIR.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_file() and entry.stat().st_mtime < cutoff:
+                entry.unlink()
+        except OSError:
+            continue
+
+
+def _spill_to_file(data: bytes, extension: str) -> Path:
+    """Write an oversized binary payload to disk so envelopes stay token-sized."""
+    _SPILL_DIR.mkdir(parents=True, exist_ok=True)
+    _prune_spill_dir()
+    name = f"payload_{os.getpid()}_{int(time.time() * 1000)}_{next(_spill_counter)}{extension}"
+    path = _SPILL_DIR / name
+    path.write_bytes(data)
+    return path
+
+
 def _json_safe(value: Any) -> Any:
     """Convert common MCP/Python return values into JSON-serializable data."""
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -151,6 +190,15 @@ def _json_safe(value: Any) -> Any:
     if isinstance(value, Path):
         return str(value)
     if isinstance(value, bytes):
+        if len(value) > _INLINE_BYTES_LIMIT:
+            try:
+                return {
+                    "type": "bytes_file",
+                    "file": str(_spill_to_file(value, ".bin")),
+                    "size": len(value),
+                }
+            except OSError:
+                pass
         return {
             "type": "bytes",
             "encoding": "base64",
@@ -171,11 +219,23 @@ def _json_safe(value: Any) -> Any:
             data = content.dict(by_alias=True)
         else:
             data = dict(content)
+        mime_type = data.get("mimeType") or data.get("mime_type") or "image/png"
+        raw_data = data.get("data") or ""
+        try:
+            img_bytes = b64decode(raw_data)
+            spilled = _spill_to_file(img_bytes, _MIME_EXTENSIONS.get(mime_type, ".img"))
+        except (OSError, ValueError):
+            return {
+                "type": "image",
+                "mime_type": mime_type,
+                "encoding": "base64",
+                "data": raw_data,
+            }
         return {
-            "type": "image",
-            "mime_type": data.get("mimeType") or data.get("mime_type"),
-            "encoding": "base64",
-            "data": data.get("data"),
+            "type": "image_file",
+            "file": str(spilled),
+            "mime_type": mime_type,
+            "size_bytes": len(img_bytes),
         }
 
     if hasattr(value, "model_dump"):
@@ -241,6 +301,7 @@ def _normalize_error(
     code: Any = None,
     retryable: Any = None,
     hint: Any | None = None,
+    details: Any | None = None,
 ) -> dict[str, Any]:
     resolved = (
         ErrorCode(code)
@@ -255,6 +316,8 @@ def _normalize_error(
     }
     if hint is not None:
         error["hint"] = hint
+    if details is not None:
+        error["details"] = _json_safe(details)
     return error
 
 
@@ -269,6 +332,7 @@ def _error_from_result(result: Any, raw: Any) -> dict[str, Any] | None:
                 code=result.get("code"),
                 retryable=result.get("retryable"),
                 hint=result.get("hint"),
+                details=result.get("details"),
             )
     if isinstance(raw, str):
         stripped = raw.strip()
@@ -285,6 +349,7 @@ def _error_from_result(result: Any, raw: Any) -> dict[str, Any] | None:
                 code=structured.get("code"),
                 retryable=structured.get("retryable"),
                 hint=structured.get("hint"),
+                details=structured.get("details"),
             )
         lowered = stripped.lower()
         if lowered.startswith(_ERROR_PREFIXES) or any(s in lowered for s in _ERROR_SUBSTRINGS):
@@ -304,6 +369,7 @@ def _error_from_exception(exc: BaseException) -> dict[str, Any]:
             code=structured.get("code"),
             retryable=structured.get("retryable"),
             hint=structured.get("hint"),
+            details=structured.get("details"),
         )
 
     if isinstance(response, dict):
@@ -315,6 +381,7 @@ def _error_from_exception(exc: BaseException) -> dict[str, Any]:
                 code=structured.get("code"),
                 retryable=structured.get("retryable"),
                 hint=structured.get("hint"),
+                details=structured.get("details"),
             )
 
     return _normalize_error(error_type=exc.__class__.__name__, message=str(exc))

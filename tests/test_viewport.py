@@ -53,7 +53,7 @@ class ViewportCaptureTests(unittest.TestCase):
             ],
         )
 
-    def test_capture_viewport_can_still_return_inline_image_when_requested(self) -> None:
+    def test_capture_viewport_return_image_is_ignored_and_hints_at_file(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp.write(b"png bytes")
             tmp_path = tmp.name
@@ -71,9 +71,10 @@ class ViewportCaptureTests(unittest.TestCase):
         with patch.object(viewport, "client", fake_client):
             result = viewport.capture_viewport(return_image=True)
 
-        content = result.to_image_content()
-        self.assertEqual(content.mimeType, "image/png")
-        self.assertTrue(content.data)
+        self.assertEqual(result["type"], "image_file")
+        self.assertEqual(result["file"], tmp_path)
+        self.assertNotIn("data", result)
+        self.assertIn("deprecated", result["hint"]["message"])
 
 
 if __name__ == "__main__":

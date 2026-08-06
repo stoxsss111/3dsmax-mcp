@@ -1,31 +1,35 @@
 #!/usr/bin/env python3
-"""uninstall 3dsmax-mcp. Removes native bridge, MAXScript, skills, and agent registrations.
+"""uninstall 3dsmax-mcp. Removes application package, legacy Max files, skills, and agent registrations.
 
 Run:  uv run python uninstall.py
 """
 
 import json
-import os
+import shutil
 import subprocess
-import sys
 from pathlib import Path
 
 import install
 
 ROOT = Path(__file__).resolve().parent
 
-MAX_DIRS = [
-    Path(r"C:\Program Files\Autodesk\3ds Max 2026"),
-    Path(r"C:\Program Files\Autodesk\3ds Max 2025"),
-    Path(r"C:\Program Files\Autodesk\3ds Max 2024"),
-]
+
+def dedupe_max_dirs(dirs: list[Path]) -> list[Path]:
+    """Collapse duplicate install paths when multiple year keys resolve to the same folder."""
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for d in dirs:
+        key = str(d.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(d)
+    return unique
 
 
-def find_max() -> Path | None:
-    for d in MAX_DIRS:
-        if (d / "3dsmax.exe").exists():
-            return d
-    return None
+def find_max_installations() -> list[Path]:
+    """All Max installs for 2023-2027: ADSK_3DSMAX_x64_{year} env var, then default path."""
+    return dedupe_max_dirs(install.find_max_installations())
 
 
 def delete_elevated(path: Path) -> bool:
@@ -47,13 +51,51 @@ def delete_elevated(path: Path) -> bool:
 def rmdir(path: Path):
     """Remove a directory, symlink, or junction."""
     if path.is_symlink() or path.is_junction():
-        # Symlinks/junctions: unlink the link, don't follow into target
         path.unlink()
         return
     if not path.exists():
         return
-    import shutil
     shutil.rmtree(path, ignore_errors=True)
+
+
+def remove_dir_elevated(path: Path) -> bool:
+    """Remove a directory tree, elevating to admin if needed."""
+    if not path.exists():
+        return True
+    try:
+        shutil.rmtree(path)
+        return True
+    except (PermissionError, OSError):
+        cmd = f'rmdir /S /Q "{path}"'
+        subprocess.run(
+            ["powershell", "-Command",
+             f'Start-Process -FilePath cmd.exe -ArgumentList \'/c {cmd}\' -Verb RunAs -Wait'],
+            capture_output=True, timeout=30,
+        )
+        return not path.exists()
+
+
+def remove_max_deployment(max_dir: Path) -> None:
+    """Remove native bridge and MAXScript listener from one Max installation."""
+    gup = max_dir / "plugins" / "mcp_bridge.gup"
+    ms_server = max_dir / "scripts" / "mcp" / "mcp_server.ms"
+    ms_auto = max_dir / "scripts" / "startup" / "mcp_autostart.ms"
+    ms_dir = max_dir / "scripts" / "mcp"
+
+    for f in [gup, ms_server, ms_auto]:
+        if f.exists():
+            if delete_elevated(f):
+                print(f"  Deleted: {f}")
+            else:
+                print(f"  FAILED: {f}")
+        else:
+            print(f"  Already gone: {f.name}")
+
+    if ms_dir.exists() and not any(ms_dir.iterdir()):
+        try:
+            ms_dir.rmdir()
+        except Exception:
+            pass
 
 
 def main():
@@ -61,40 +103,30 @@ def main():
     print("  3dsmax-mcp uninstaller")
     print("=" * 60)
 
-    # 1. Remove native bridge + MAXScript from Max
-    max_dir = find_max()
-    if max_dir:
-        print(f"\nFound 3ds Max at: {max_dir}")
-
-        gup = max_dir / "plugins" / "mcp_bridge.gup"
-        ms_server = max_dir / "scripts" / "mcp" / "mcp_server.ms"
-        ms_auto = max_dir / "scripts" / "startup" / "mcp_autostart.ms"
-        ms_dir = max_dir / "scripts" / "mcp"
-
-        print("\n[1/4] Removing native bridge + MAXScript")
-        for f in [gup, ms_server, ms_auto]:
-            if f.exists():
-                if delete_elevated(f):
-                    print(f"  Deleted: {f}")
-                else:
-                    print(f"  FAILED: {f}")
-            else:
-                print(f"  Already gone: {f.name}")
-
-        # Remove empty mcp/ dir
-        if ms_dir.exists() and not any(ms_dir.iterdir()):
-            try:
-                ms_dir.rmdir()
-            except Exception:
-                pass
+    # 1. Remove legacy native bridge + MAXScript copies from Max install dirs
+    max_dirs = find_max_installations()
+    if max_dirs:
+        print(f"\n[1/5] Removing legacy bridge + MAXScript from {len(max_dirs)} installation(s)")
+        for max_dir in max_dirs:
+            print(f"\n  {max_dir}")
+            remove_max_deployment(max_dir)
     else:
-        print("\n[1/4] SKIP: 3ds Max not found")
+        print("\n[1/5] SKIP: 3ds Max not found")
 
-    # 2. remove skill files, symlinks, junctions, and .skill archives
-    print("\n[2/4] Removing skill files")
+    # 2. remove the ApplicationPlugins bundle
+    print(f"\n[2/5] Removing application package")
+    package_dir = install.APPLICATION_PACKAGE_DST
+    if not package_dir.exists():
+        print(f"  Already gone: {package_dir}")
+    elif remove_dir_elevated(package_dir):
+        print(f"  Removed: {package_dir}")
+    else:
+        print(f"  FAILED: {package_dir} (close 3ds Max and re-run)")
+
+    # 3. remove skill files, symlinks, junctions, and .skill archives
+    print("\n[3/5] Removing skill files")
     SKILL_NAME = "3dsmax-mcp-dev"
 
-    # known skill directories (real folders, symlinks, or junctions)
     skill_dirs = [
         ROOT / ".claude" / "skills" / SKILL_NAME,
         ROOT / ".agents" / "skills" / SKILL_NAME,
@@ -102,7 +134,6 @@ def main():
         Path.home() / ".agents" / "skills" / SKILL_NAME,
     ]
 
-    # also scan parent skill folders for any symlinks/junctions pointing to our skill
     scan_parents = [
         ROOT / ".claude" / "skills",
         ROOT / ".agents" / "skills",
@@ -116,13 +147,11 @@ def main():
             if entry.name == SKILL_NAME:
                 if entry not in skill_dirs:
                     skill_dirs.append(entry)
-            # Catch renamed symlinks pointing to our skill
             if entry.is_symlink() or entry.is_junction():
                 try:
                     target = str(entry.resolve())
-                    if SKILL_NAME in target:
-                        if entry not in skill_dirs:
-                            skill_dirs.append(entry)
+                    if SKILL_NAME in target and entry not in skill_dirs:
+                        skill_dirs.append(entry)
                 except Exception:
                     pass
 
@@ -132,9 +161,7 @@ def main():
             rmdir(d)
             print(f"  Removed ({kind}): {d}")
 
-    # remove generated files and .skill archives
     gen_files = [ROOT / "AGENTS.md", ROOT / f"{SKILL_NAME}.skill"]
-    # also check home for stray .skill files
     home_skill = Path.home() / ".claude" / f"{SKILL_NAME}.skill"
     if home_skill.exists():
         gen_files.append(home_skill)
@@ -144,8 +171,7 @@ def main():
             f.unlink()
             print(f"  Removed: {f}")
 
-    # 3. unregister from agents
-    print("\n[3/4] Unregistering from agents")
+    print("\n[4/5] Unregistering from agents")
     agent_cmds = {
         "claude": "claude mcp remove --scope user 3dsmax-mcp",
         "codex": "codex mcp remove 3dsmax-mcp",
@@ -161,7 +187,6 @@ def main():
         except (FileNotFoundError, subprocess.TimeoutExpired):
             pass
 
-    # app configs that store mcpServers
     app_configs = [
         (install._claude_desktop_label(path), path)
         for path in install.claude_desktop_config_paths()
@@ -185,20 +210,20 @@ def main():
         except Exception:
             pass
 
-    # 4. clean local build artifacts
-    print("\n[4/4] Cleaning build artifacts")
+    print("\n[5/5] Cleaning build artifacts")
     for d in [ROOT / ".claude" / "skills", ROOT / ".agents" / "skills"]:
         if d.exists() and not any(d.iterdir()):
             d.rmdir()
 
     print("\n" + "=" * 60)
-    print("  deinstalled! restart 3ds Max to unload the native bridge.")
+    print("  deinstalled! restart 3ds Max to unload the bridge.")
     print("  the repo itself is untouched. you can run install.py to reinstall.")
     print(" ")
     print("  clone // Metaverse Makers. 2026 ")
     print("=" * 60)
     print()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

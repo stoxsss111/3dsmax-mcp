@@ -13,6 +13,7 @@ OUT_PATH = ROOT / "tool_playground" / "catalog.json"
 
 sys.path.insert(0, str(ROOT))
 from scripts.gen_tool_registry import (  # noqa: E402
+    DISABLED_MODULES,
     build_schema,
     find_cmd_type,
     first_doc_line,
@@ -53,6 +54,7 @@ MODULE_CATEGORY = {
     "execute": "Advanced",
     "chat": "Chat",
     "data_channel": "Data Channel",
+    "mcg": "Max Creation Graph",
     "effects": "Effects",
     "floor_plan": "Floor Plan",
     "railclone": "RailClone",
@@ -85,6 +87,7 @@ CATEGORY_TO_GROUP: dict[str, str] = {
     "RailClone": "Specialty",
     "Floor Plan": "Specialty",
     "Data Channel": "Specialty",
+    "Max Creation Graph": "Specialty",
     "Scattering": "Specialty",
     "Effects": "Specialty",
     "State Sets": "Specialty",
@@ -115,7 +118,7 @@ GROUP_HINTS: dict[str, str] = {
     "Animation": "Controllers and wire params",
     "Viewport & Render": "Captures and rendering",
     "Files": "External .max inspection and merge",
-    "Specialty": "tyFlow, RailClone, Data Channel, etc.",
+    "Specialty": "MCG, Data Channel, tyFlow, RailClone, etc.",
     "Advanced": "execute_maxscript, smoke tests, chat",
 }
 
@@ -134,7 +137,6 @@ HIDDEN_ALIAS_TOOLS = {
     # make inspect_properties(target="modifier") the single visible path.
     "inspect_modifier_properties",
 }
-
 
 def example_for(name: str, schema: dict) -> dict:
     if name in CUSTOM:
@@ -177,6 +179,19 @@ def example_for(name: str, schema: dict) -> dict:
 
 
 def risk_for(name: str) -> str:
+    if name in {"mcg_apply_modifier", "mcg_set_node_parameter"}:
+        return "changes_scene"
+    if name in {
+        "mcg_apply_patch",
+        "mcg_cleanup_workspace",
+        "mcg_compile_graph",
+        "mcg_create_graph",
+        "mcg_reload_operators",
+        "mcg_resolve_class",
+        "mcg_restore_checkpoint",
+        "mcg_test_tool",
+    }:
+        return "advanced"
     if name in SKIP_DEFAULT:
         return "advanced"
     if name in MUTATE_TOOLS:
@@ -204,6 +219,8 @@ def collect_tools() -> list[dict]:
         except SyntaxError:
             continue
         module = path.stem
+        if module in DISABLED_MODULES:
+            continue
         category = MODULE_CATEGORY.get(module, module.replace("_", " ").title())
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
