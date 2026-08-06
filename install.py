@@ -20,6 +20,12 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+# Installed from a wheel this file is `maxmcp/installer.py`, so ROOT is the package
+# directory; from a checkout it is `install.py` and ROOT is the repo root. The Max-side
+# payload is shipped at the same relative paths either way (see force-include in
+# pyproject.toml), so only MCP client registration has to know the difference.
+IS_PACKAGED = Path(__file__).name == "installer.py"
+
 GUP_SRCS = {
     2023: ROOT / "native" / "bin" / "mcp_bridge_2023.gup",
     2024: ROOT / "native" / "bin" / "mcp_bridge_2024.gup",
@@ -338,8 +344,46 @@ def build_skills(skip_skill: bool = False) -> bool:
         return False
 
 
+def console_script_path() -> Path | None:
+    """Find the installed `3dsmax-mcp` console script next to the running interpreter."""
+    exe = Path(sys.executable)
+    candidates = (
+        exe.with_name("3dsmax-mcp.exe"),          # venv: Scripts/python.exe next to it
+        exe.parent / "Scripts" / "3dsmax-mcp.exe",  # system install: Scripts/ subdir
+    )
+    return next((c for c in candidates if c.exists()), None)
+
+
+def mcp_server_command(repo_dir: str) -> list[str]:
+    """Return the launch command for checkout and wheel installs."""
+    if IS_PACKAGED:
+        script = console_script_path()
+        if script is not None:
+            return [str(script)]
+        # User-site and Microsoft Store installs may place console scripts away
+        # from sys.executable. The installed module remains an absolute, uv-free
+        # fallback in every pip layout.
+        return [sys.executable, "-m", "maxmcp.server"]
+    return ["uv", "run", "--directory", repo_dir, "3dsmax-mcp"]
+
+
 def mcp_server_entry(repo_dir: str) -> dict:
-    return {"command": "uv", "args": ["run", "--directory", repo_dir, "3dsmax-mcp"]}
+    command = mcp_server_command(repo_dir)
+    entry = {"command": command[0]}
+    if len(command) > 1:
+        entry["args"] = command[1:]
+    return entry
+
+
+def agent_registration_command(agent: str, server_command: list[str]) -> list[str] | None:
+    """Build one agent CLI registration command around the shared server launch."""
+    if agent == "claude":
+        return [agent, "mcp", "add", "--scope", "user", "3dsmax-mcp", "--", *server_command]
+    if agent == "codex":
+        return [agent, "mcp", "add", "3dsmax-mcp", "--", *server_command]
+    if agent == "gemini":
+        return [agent, "mcp", "add", "--scope", "user", "3dsmax-mcp", *server_command]
+    return None
 
 
 def claude_desktop_config_paths() -> list[Path]:
@@ -420,6 +464,7 @@ def register_app_mcp_configs(repo_dir: str) -> None:
 def register_agents() -> bool:
     print("\n[4/4] Agent registration")
     dir_str = str(ROOT)
+    server_command = mcp_server_command(dir_str)
 
     agents = []
     for name in ["claude", "codex", "gemini"]:
@@ -429,26 +474,26 @@ def register_agents() -> bool:
     if not agents:
         print("  No agents found on PATH (claude, codex, gemini)")
         print("  Manual registration:")
-        print(f'    claude mcp add --scope user 3dsmax-mcp -- uv run --directory "{dir_str}" 3dsmax-mcp')
+        manual = agent_registration_command("claude", server_command)
+        print(f"    {subprocess.list2cmdline(manual or [])}")
         print(f'    Cursor: {Path.home() / ".cursor" / "mcp.json"} (updated below if writable)')
 
     for agent in agents:
-        if agent == "claude":
-            cmd = f'{agent} mcp add --scope user 3dsmax-mcp -- uv run --directory "{dir_str}" 3dsmax-mcp'
-        elif agent == "codex":
-            cmd = f'{agent} mcp add 3dsmax-mcp -- uv run --directory "{dir_str}" 3dsmax-mcp'
-        elif agent == "gemini":
-            cmd = f'{agent} mcp add --scope user 3dsmax-mcp uv run --directory "{dir_str}" 3dsmax-mcp'
-        else:
+        cmd = agent_registration_command(agent, server_command)
+        if cmd is None:
             continue
+        display = subprocess.list2cmdline(cmd)
         print(f"  Registering with {agent}...")
         try:
-            subprocess.run(cmd, shell=True, check=True, capture_output=True, timeout=15)
+            # Agent CLIs installed through npm are commonly .cmd shims on
+            # Windows, so keep shell execution while quoting the argv once.
+            subprocess.run(display, shell=True, check=True, capture_output=True, timeout=15)
             print(f"  OK: {agent}")
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-            print(f"  SKIP: {agent} (run manually: {cmd})")
+            print(f"  SKIP: {agent} (run manually: {display})")
 
-    warn_if_uv_missing()
+    if not IS_PACKAGED:
+        warn_if_uv_missing()
     register_app_mcp_configs(dir_str)
     return True
 
