@@ -57,43 +57,28 @@ def get_bridge_status() -> str:
 
 @mcp.tool()
 def list_max_instances(include_scene: bool = True) -> str:
-    """List every running 3ds Max with the MCP bridge. Call this FIRST in a new chat.
+    """List every running 3ds Max that has the MCP bridge loaded.
 
-    Use when: starting 3ds Max work in a chat (unless this chat already knows its pid),
-    a tool failed with a "Multiple 3ds Max MCP instances" / "not running" error, or
-    3ds Max was restarted (pids change).
-    Returns per instance: pid, max_instance (value to pass), open scene ('' = untitled),
-    objects, busy (a call from some chat is running there now) and last_call_s_ago
-    (any chat). With 2+ instances pass max_instance on EVERY later tool call.
+    Use when: several 3ds Max windows are open, a tool failed with an
+    "Multiple 3ds Max MCP instances" error, or before select_max_instance.
+    Returns index, pid, instance_id, open scene, and which one is claimed/selected.
     """
-    items = client.list_instances(details=include_scene, fresh=True)
-    instances = []
-    for item in items:
-        pipe = item.get("pipe")
-        usage = client.instance_usage(pipe) if pipe else {}
-        instances.append({
-            "index": item.get("index"),
-            "pid": item.get("pid"),
-            "max_instance": str(item.get("pid") or item.get("instance_id") or ""),
-            "instance_id": item.get("instance_id"),
-            "scene": item.get("scene"),
-            "objects": item.get("objects"),
-            "busy": usage.get("busy", False),
-            "last_call_s_ago": usage.get("last_call_s_ago"),
-            "claimed": item.get("claimed", False),
-            "selected": item.get("selected", False),
-            "pipe": pipe,
-        })
-    if len(items) <= 1:
-        how_to = "One 3ds Max is running: max_instance is not needed."
-    else:
-        how_to = (
-            "Several 3ds Max are open and this MCP server is shared by all chats. Pick the one "
-            "the user means (scene name / objects; ask the user if unclear; busy or recently "
-            "used ones are probably driven by another chat) and pass max_instance=<its pid> on "
-            "EVERY tool call in this chat. Do not use select_max_instance."
-        )
-    return json.dumps({"count": len(items), "how_to": how_to, "instances": instances})
+    items = client.list_instances(details=include_scene)
+    return json.dumps({
+        "count": len(items),
+        "instances": [
+            {
+                "index": item.get("index"),
+                "pid": item.get("pid"),
+                "instance_id": item.get("instance_id"),
+                "scene": item.get("scene"),
+                "claimed": item.get("claimed", False),
+                "selected": item.get("selected", False),
+                "pipe": item.get("pipe"),
+            }
+            for item in items
+        ],
+    })
 
 
 @mcp.tool()
@@ -103,15 +88,13 @@ def select_max_instance(instance: str = "") -> str:
     instance: list index ("1"), pid ("12345"), instance id ("pid-12345"),
     or part of the open scene file name ("2326"). Empty / "auto" = back to
     default routing (claimed instance, or the only one running).
-    WARNING: the desktop app runs ONE MCP server process for ALL chats, so this
-    selection is global and another chat can override it. With several 3ds Max
-    open, pass max_instance=<pid or scene name part> on every tool call instead.
+    Each chat/session has its own MCP server process, so two sessions can
+    work in two different 3ds Max windows at the same time.
     """
     item = client.select_instance(instance)
     if item is None:
         return json.dumps({"selected": None, "mode": "auto"})
     return json.dumps({
-        "shared_across_chats": True,
         "selected": {
             "pid": item.get("pid"),
             "instance_id": item.get("instance_id"),

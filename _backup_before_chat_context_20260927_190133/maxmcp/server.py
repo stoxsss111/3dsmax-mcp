@@ -1,5 +1,3 @@
-import functools
-import inspect
 import logging
 import os
 import sys
@@ -12,33 +10,7 @@ from .tool_response import make_structured_tool
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-import anyio
-
-SERVER_INSTRUCTIONS = (
-    "3ds Max MCP - connection rules. This server process is shared by ALL Claude chats on "
-    "this computer, and several 3ds Max windows can be open at once, each with its own bridge.\n"
-    "1. Before the first scene tool in a chat, call list_max_instances once (fast) unless this "
-    "chat already knows its pid.\n"
-    "2. One instance: just work, max_instance is not needed.\n"
-    "3. Two or more: choose the window the user means - by scene file name, by what is in the "
-    "scene (objects), or ask the user one short question. An instance with busy=true or a small "
-    "last_call_s_ago is probably being driven by another chat; do not touch it unless the user "
-    "says so. Then pass max_instance=\"<pid>\" (or a unique part of the scene file name) on "
-    "EVERY tool call in this chat.\n"
-    "4. Never use select_max_instance or 'MCP Claim This Max' when several chats work: they "
-    "are global and would redirect the other chats.\n"
-    "5. The pid changes when 3ds Max restarts. If a call says the instance is not running, "
-    "call list_max_instances again and re-pick (ask the user if unclear).\n"
-    "6. If every tool fails with a bare 'Tool execution failed' and no JSON {ok, ...} reply, "
-    "the server was not reached: the chat is probably not linked to this computer (open it in "
-    "the Claude desktop app and choose 'Link to this computer'), or the desktop app / 3ds Max "
-    "is closed. Tell the user instead of retrying in a loop.\n"
-    "7. Calls to one 3ds Max run one at a time; different 3ds Max windows run in parallel. "
-    "Keep a single MAXScript call under ~50 s (split long loops) - the desktop bridge gives up "
-    "after about 60 s."
-)
-
-mcp = FastMCP("3dsmax-mcp", instructions=SERVER_INSTRUCTIONS)
+mcp = FastMCP("3dsmax-mcp")
 client = MaxClient()
 
 if __name__ == "__main__" and __spec__ is not None:
@@ -167,23 +139,6 @@ def _raw_tool_decorator(raw_tool, decorator_args, decorator_kwargs, annotations:
     return raw_tool(*decorator_args, **decorator_kwargs)
 
 
-def _run_in_thread(wrapped):
-    """Run a blocking tool in a worker thread instead of on the event loop.
-
-    FastMCP calls sync tools directly on the event loop, so one chat's long MAXScript
-    in one 3ds Max froze every other chat. Per-pipe locks in MaxClient still keep
-    calls to the same 3ds Max strictly sequential.
-    """
-
-    @functools.wraps(wrapped)
-    async def runner(*args, **kwargs):
-        return await anyio.to_thread.run_sync(functools.partial(wrapped, *args, **kwargs))
-
-    runner.__signature__ = getattr(wrapped, "__signature__", None) or inspect.signature(wrapped)
-    runner.__annotations__ = dict(getattr(wrapped, "__annotations__", {}))
-    return runner
-
-
 def _install_structured_tool_results() -> None:
     """Register MCP tools with stable JSON envelopes while keeping raw callables."""
     raw_tool = mcp.tool
@@ -198,7 +153,7 @@ def _install_structured_tool_results() -> None:
                 transport_provider=client.get_last_transport,
                 instance_router=client.targeting,
             )
-            _register_raw_tool(raw_tool, _run_in_thread(wrapped), annotations)
+            _register_raw_tool(raw_tool, wrapped, annotations)
             return fn
 
         def decorate(fn):
@@ -215,7 +170,7 @@ def _install_structured_tool_results() -> None:
                 transport_provider=client.get_last_transport,
                 instance_router=client.targeting,
             )
-            raw_decorator(_run_in_thread(wrapped))
+            raw_decorator(wrapped)
             return fn
 
         return decorate

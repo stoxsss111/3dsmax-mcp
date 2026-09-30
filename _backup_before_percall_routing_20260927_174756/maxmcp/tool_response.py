@@ -478,28 +478,15 @@ def envelope_exception(
     return _finalize_envelope(payload)
 
 
-MAX_INSTANCE_PARAM = "max_instance"
-
-
 def make_structured_tool(
     fn: Callable[..., Any],
     *,
     transport_provider: Callable[[], dict[str, Any] | None] | None = None,
     before_call: Callable[[], None] | None = None,
-    instance_router: Callable[[str | None], Any] | None = None,
 ) -> Callable[..., dict[str, Any]]:
-    """Return a wrapper that preserves input schema and advertises ToolEnvelope output.
-
-    instance_router: context-manager factory (MaxClient.targeting). When given, every
-    tool gains an optional ``max_instance`` parameter that routes that one call to a
-    specific 3ds Max instance. The MCP server process is shared by all chats of the
-    desktop app, so this per-call target is the only binding another chat cannot
-    override.
-    """
+    """Return a wrapper that preserves input schema and advertises ToolEnvelope output."""
 
     fn_signature: Signature = signature(fn)
-    fn_has_instance_param = MAX_INSTANCE_PARAM in fn_signature.parameters
-    inject_instance_param = instance_router is not None and not fn_has_instance_param
     try:
         resolved_annotations = get_type_hints(fn, include_extras=True)
     except Exception:
@@ -512,16 +499,6 @@ def make_structured_tool(
         else:
             resolved_params.append(param)
 
-    if inject_instance_param:
-        resolved_params.append(
-            Parameter(
-                MAX_INSTANCE_PARAM,
-                Parameter.KEYWORD_ONLY,
-                default="",
-                annotation=str,
-            )
-        )
-
     # Advertise the envelope shape to MCP clients, not the inner tool return type.
     fn_signature = fn_signature.replace(
         parameters=resolved_params,
@@ -529,15 +506,7 @@ def make_structured_tool(
     )
     resolved_annotations = dict(resolved_annotations)
     resolved_annotations["return"] = ToolEnvelope
-    if inject_instance_param:
-        resolved_annotations[MAX_INSTANCE_PARAM] = str
     tool_name = getattr(fn, "__name__", "") or ""
-    doc = getattr(fn, "__doc__", None)
-    if inject_instance_param and doc and MAX_INSTANCE_PARAM not in doc:
-        doc = doc.rstrip() + (
-            "\n    max_instance: optional 3ds Max target for this call when several are open "
-            "(pid, \"pid-12345\" or part of the open scene file name); see list_max_instances.\n    "
-        )
 
     @wraps(fn)
     def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -545,15 +514,8 @@ def make_structured_tool(
             before_call()
         started_at = time.perf_counter()
         script = _script_from_call(tool_name, args, kwargs)
-        target = kwargs.get(MAX_INSTANCE_PARAM, "")
-        if inject_instance_param:
-            kwargs.pop(MAX_INSTANCE_PARAM, None)
         try:
-            if instance_router is not None and target:
-                with instance_router(target):
-                    raw = fn(*args, **kwargs)
-            else:
-                raw = fn(*args, **kwargs)
+            raw = fn(*args, **kwargs)
             elapsed_ms = (time.perf_counter() - started_at) * 1000.0
             transport = transport_provider() if transport_provider else None
             return envelope_result(
@@ -576,8 +538,6 @@ def make_structured_tool(
 
     wrapped.__signature__ = fn_signature  # type: ignore[attr-defined]
     wrapped.__annotations__ = resolved_annotations
-    if doc:
-        wrapped.__doc__ = doc
     return wrapped
 
 

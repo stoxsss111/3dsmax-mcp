@@ -253,22 +253,3 @@ python scripts/run_live_tool_smoke.py --tier read
 | `skills/3dsmax-mcp-dev/` | Agent skill source |
 | `scripts/build_skill.py` | Skill + AGENTS.md generator |
 | `scripts/gen_tool_registry.py` | In-Max chat tool registry |
-
-
-## Several 3ds Max instances at once
-
-Every 3ds Max with the bridge loaded opens its own pipe (`\\.\pipe\3dsmax-mcp-pid-<PID>`) and
-registers itself in `%LOCALAPPDATA%\3dsmax-mcp\instances\`. Each MCP client session (each chat)
-starts its own `3dsmax-mcp` server process, so sessions can be bound to different Max windows:
-
-- `list_max_instances` — every live Max: index, pid, instance id, open scene, claimed/selected.
-- `select_max_instance(instance)` — bind this session to one Max by index, pid, `pid-<PID>`,
-  or part of the scene file name. `""`/`auto` returns to default routing.
-- `execute_maxscript(..., max_instance=...)` — one-off call to a specific Max.
-- `MCP_MAX_INSTANCE=<pid | pid-id | scene part>` in the server env pins a whole server process.
-
-Routing order: per-call `max_instance` → session selection → `MCP_MAX_PIPE` → `MCP_MAX_INSTANCE`
-→ instance claimed with *MCP > MCP Claim This Max* → the only running instance.
-When a session is pinned and its Max closes, commands fail instead of silently switching or
-falling back to TCP (which could reach a different Max). Pipe handles and locks are per
-instance, so commands to different Max instances do not wait for each other.

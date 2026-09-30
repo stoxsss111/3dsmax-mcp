@@ -111,16 +111,6 @@ class MaxClient:
         self._locks_guard = threading.Lock()
         # Session-level target chosen with select_instance() (per MCP server process).
         self._session_instance: Optional[dict[str, Any]] = None
-        # pipe -> (scene, timestamp): scene-name lookups are cached briefly so that
-        # per-call max_instance="<scene name>" routing stays cheap.
-        self._scene_cache: dict[str, tuple[str, float]] = {}
-        self._scene_cache_ttl = 15.0
-        # pipe -> objects count from the last scene probe (context for list_max_instances).
-        self._scene_objects: dict[str, int] = {}
-        # pipe -> [calls in flight, wall time of the last call]. The server process is
-        # shared by all chats, so this tells a new chat which 3ds Max is being driven.
-        self._usage: dict[str, list[float]] = {}
-        self._usage_lock = threading.Lock()
         self._local = threading.local()
         env_key = os.environ.get(MCP_INSTANCE_ENV, "").strip()
         if env_key:
@@ -191,60 +181,27 @@ class MaxClient:
         live: list[dict[str, Any]] = []
         for path in paths:
             data = self._load_instance(path)
-            if not data:
-                continue
-            if self._probe_pipe_available(data["pipe"]):
+            if data and self._probe_pipe_available(data["pipe"]):
                 live.append(data)
-            elif self._pipe_missing(data["pipe"]):
-                # The bridge never removes its registration file when 3ds Max
-                # exits; drop dead entries so the list stays short and fast.
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
         return live
 
     # ── Multi-instance targeting ─────────────────────────────────
-    def _instance_scene(self, pipe_name: str, timeout: float = 3.0, fresh: bool = False) -> str:
+    def _instance_scene(self, pipe_name: str, timeout: float = 3.0) -> str:
         """Open scene path of one instance ('' untitled, '<busy>' if Max does not answer)."""
-        if not fresh:
-            cached = self._scene_cache.get(pipe_name)
-            if cached and (time.monotonic() - cached[1]) < self._scene_cache_ttl:
-                return cached[0]
-        if self._calls_in_flight(pipe_name):
-            # Another chat is running a command there: do not queue behind it.
-            cached = self._scene_cache.get(pipe_name)
-            return cached[0] if cached else "<busy>"
-        scene = self._query_instance_scene(pipe_name, timeout)
-        if scene != "<busy>":
-            self._scene_cache[pipe_name] = (scene, time.monotonic())
-        return scene
-
-    def _query_instance_scene(self, pipe_name: str, timeout: float = 3.0) -> str:
         previous = getattr(self._local, "override_pipe", None)
-        previous_probe = getattr(self._local, "probe", False)
         self._local.override_pipe = pipe_name
-        self._local.probe = True
         try:
             response = self.send_command(
-                'maxFilePath + maxFileName + "|" + (objects.count as string)',
-                cmd_type="maxscript",
-                timeout=timeout,
+                'maxFilePath + maxFileName', cmd_type="maxscript", timeout=timeout
             )
             result = response.get("result", "")
-            result = result if isinstance(result, str) else str(result)
-            scene, sep, count = result.rpartition("|")
-            if sep and count.strip().isdigit():
-                self._scene_objects[pipe_name] = int(count.strip())
-                return scene
-            return result
+            return result if isinstance(result, str) else str(result)
         except Exception:  # noqa: BLE001 - informational only
             return "<busy>"
         finally:
             self._local.override_pipe = previous
-            self._local.probe = previous_probe
 
-    def list_instances(self, details: bool = False, fresh: bool = False) -> list[dict[str, Any]]:
+    def list_instances(self, details: bool = False) -> list[dict[str, Any]]:
         """Live 3ds Max bridges (instance files whose pipe answers)."""
         active = self._active_instance() or {}
         selected = self._session_instance or {}
@@ -255,8 +212,7 @@ class MaxClient:
             info["claimed"] = item.get("pipe") == active.get("pipe")
             info["selected"] = item.get("pipe") == selected.get("pipe")
             if details:
-                info["scene"] = self._instance_scene(item["pipe"], fresh=fresh)
-                info["objects"] = self._scene_objects.get(item["pipe"])
+                info["scene"] = self._instance_scene(item["pipe"])
             out.append(info)
         return out
 
@@ -317,25 +273,6 @@ class MaxClient:
         finally:
             self._local.override_pipe = previous
 
-    def _describe_instance(self, item: dict[str, Any]) -> str:
-        """One-line label with pid, scene, objects and usage for error messages."""
-        pipe = item.get("pipe", "")
-        label = f"{item.get('instance_id', 'unknown')} pid={item.get('pid', '?')}"
-        if not pipe:
-            return label
-        # Cached only: building this message must not talk to 3ds Max itself.
-        cached = self._scene_cache.get(pipe)
-        if cached:
-            label += f" scene={(cached[0] or 'untitled')!r}"
-        if pipe in self._scene_objects:
-            label += f" objects={self._scene_objects[pipe]}"
-        usage = self.instance_usage(pipe)
-        if usage["busy"]:
-            label += " busy=another call is running there"
-        elif usage["last_call_s_ago"] is not None:
-            label += f" last_call={usage['last_call_s_ago']}s ago"
-        return label
-
     def _is_pinned(self) -> bool:
         return bool(
             getattr(self._local, "override_pipe", None)
@@ -382,36 +319,18 @@ class MaxClient:
         if len(live) == 1:
             return live[0]["pipe"]
         if len(live) > 1:
-            labels = "; ".join(self._describe_instance(item) for item in live)
+            labels = ", ".join(
+                f"{item.get('instance_id', 'unknown')} pid={item.get('pid', '?')}"
+                for item in live
+            )
             raise AmbiguousMaxInstanceError(
                 "Multiple 3ds Max MCP instances are running. "
-                "Pass max_instance=<pid | pid-NNNN | part of the scene file name> on every tool call "
-                "(this MCP server process is shared by all Claude chats, so a per-call target is the "
-                "only binding that cannot be overridden by another chat). "
-                "Call list_max_instances to see pids and open scenes; as a fallback for a single chat, "
-                "run MCP > MCP Claim This Max in the target 3ds Max window. "
-                f"Available instances: {labels}. "
-                "Pick the one the user means (ask if unclear; busy / recently used ones are "
-                "probably driven by another chat) and repeat this call with max_instance=<pid>."
+                "Call list_max_instances + select_max_instance to pick one for this session, "
+                "or in the target 3ds Max window run MCP > MCP Claim This Max. "
+                f"Available instances: {labels}"
             )
 
         return DEFAULT_PIPE_NAME
-
-    def _pipe_missing(self, pipe_name: str) -> bool:
-        """True only when the named pipe definitely does not exist (bridge gone)."""
-        handle = _kernel32.CreateFileW(
-            pipe_name,
-            _GENERIC_READ | _GENERIC_WRITE,
-            0,
-            None,
-            _OPEN_EXISTING,
-            0,
-            None,
-        )
-        if handle != _INVALID_HANDLE:
-            _kernel32.CloseHandle(handle)
-            return False
-        return ctypes.get_last_error() in (_ERROR_FILE_NOT_FOUND, _ERROR_PATH_NOT_FOUND)
 
     def _probe_pipe_available(self, pipe_name: str | None = None) -> bool:
         """Best-effort probe that treats a busy pipe as available."""
@@ -572,46 +491,8 @@ class MaxClient:
         deadline = time.perf_counter() + timeout
         data = (request + "\n").encode("utf-8")
         pipe_name = self._resolve_pipe_name()
-        track = not getattr(self._local, "probe", False)
-        if track:
-            self._note_call(pipe_name, 1)
-        try:
-            return self._send_via_pipe_to(pipe_name, data, deadline, timeout)
-        finally:
-            if track:
-                self._note_call(pipe_name, -1)
 
-    def _note_call(self, pipe_name: str, delta: int) -> None:
-        with self._usage_lock:
-            entry = self._usage.setdefault(pipe_name, [0, 0.0])
-            entry[0] = max(0, entry[0] + delta)
-            entry[1] = time.time()
-
-    def _calls_in_flight(self, pipe_name: str) -> int:
-        with self._usage_lock:
-            entry = self._usage.get(pipe_name)
-            return int(entry[0]) if entry else 0
-
-    def instance_usage(self, pipe_name: str) -> dict[str, Any]:
-        """Calls in flight and seconds since the last call (from any chat) for one instance."""
-        with self._usage_lock:
-            entry = self._usage.get(pipe_name)
-            if not entry:
-                return {"busy": False, "last_call_s_ago": None}
-            return {
-                "busy": entry[0] > 0,
-                "last_call_s_ago": round(time.time() - entry[1], 1),
-            }
-
-    def _send_via_pipe_to(
-        self, pipe_name: str, data: bytes, deadline: float, timeout: float
-    ) -> bytes:
-        lock = self._pipe_lock_for(pipe_name)
-        if not lock.acquire(timeout=max(0.001, deadline - time.perf_counter())):
-            raise TimeoutError(
-                f"3ds Max ({pipe_name}) is still busy with another request; waited {timeout}s."
-            )
-        try:
+        with self._pipe_lock_for(pipe_name):
             for attempt in range(2):
                 handle = self._ensure_pipe_handle(deadline, pipe_name)
                 try:
@@ -681,8 +562,6 @@ class MaxClient:
                     if attempt == 0 and time.perf_counter() < deadline:
                         continue
                     raise
-        finally:
-            lock.release()
 
     # ── TCP transport (legacy) ───────────────────────────────────
     def _send_via_tcp(self, request: str, timeout: float) -> bytes:

@@ -8,20 +8,17 @@ _MAXSCRIPT_ERROR_SENTINEL = "__MCP_MS_ERR__:"
 
 
 @mcp.tool()
-def execute_maxscript(code: str = "", command: str = "", max_instance: str = "") -> str:
+def execute_maxscript(code: str = "", command: str = "") -> str:
     """Execute arbitrary MAXScript in 3ds Max and return the result.
 
     Use when: no dedicated MCP tool covers the operation (custom one-offs, rare APIs).
     Not when: objects, materials, selection, transforms, modifiers, layers, or scene queries —
     prefer the matching dedicated tool instead of raw MAXScript.
-    max_instance: optional one-off target when several 3ds Max are open
-    (pid, "pid-12345", list index, or part of the scene name); see list_max_instances.
     """
     script = code or command
     if not script:
         return "Error: provide MAXScript code in the 'code' parameter"
-    with client.targeting(max_instance):
-        response = client.send_command(script, cmd_type="maxscript")
+    response = client.send_command(script, cmd_type="maxscript")
     result = response.get("result", "")
 
     if isinstance(result, str) and result.startswith(_MAXSCRIPT_ERROR_SENTINEL):
