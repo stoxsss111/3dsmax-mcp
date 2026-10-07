@@ -15,7 +15,10 @@ def _ms_str(s: str) -> str:
 
 
 def _run(body: str, max_instance: str = "") -> str:
+    # The bridge wraps every script in a block: names that are not yet globals when the
+    # script is compiled would become block locals, so declare the MaxFast globals first.
     script = (
+        "global mfEnsure, mfInts, mfFloats, mfStrings, MF_Info, MF_Geo, MF_Rays, MF_Grass, MF_Jobs, gxExportMft\n"
         f'if mfEnsure == undefined do fileIn {_ms_str(_LOADER)}\n'
         "mfEnsure()\n" + body
     )
