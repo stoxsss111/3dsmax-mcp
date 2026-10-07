@@ -12,7 +12,12 @@ from uuid import uuid4
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-DEFAULT_TIMEOUT = 120.0
+# The Cowork desktop bridge abandons a tool call after ~60 s, so answer before that:
+# a call that is still running inside 3ds Max is handed to a background drain thread
+# and later calls get an immediate "still busy" answer instead of queueing blind.
+DEFAULT_TIMEOUT = float(os.environ.get("MCP_MAX_TIMEOUT", "55"))
+# How long a new call may wait for the per-instance lock held by another (live) call.
+LOCK_WAIT_SECONDS = float(os.environ.get("MCP_MAX_LOCK_WAIT", "10"))
 DEFAULT_PIPE_NAME = r"\\.\pipe\3dsmax-mcp"
 MCP_PIPE_ENV = "MCP_MAX_PIPE"
 # Pin this MCP server process to one 3ds Max: pid (12345), instance id (pid-12345),
@@ -79,6 +84,10 @@ class AmbiguousMaxInstanceError(ConnectionError):
     """Raised when multiple live Max native bridges exist and none is claimed."""
 
 
+class MaxStillBusyError(TimeoutError):
+    """A previous command is still executing inside 3ds Max (it was abandoned by the caller)."""
+
+
 class MaxBridgeError(Exception):
     """Raised when the native/TCP bridge returns a structured error response."""
 
@@ -121,6 +130,10 @@ class MaxClient:
         # shared by all chats, so this tells a new chat which 3ds Max is being driven.
         self._usage: dict[str, list[float]] = {}
         self._usage_lock = threading.Lock()
+        # pipe -> monotonic start time of a command that timed out on our side but is still
+        # running inside 3ds Max. Cleared by the drain thread when Max finally answers.
+        self._abandoned: dict[str, float] = {}
+        self._abandoned_lock = threading.Lock()
         self._local = threading.local()
         env_key = os.environ.get(MCP_INSTANCE_ENV, "").strip()
         if env_key:
@@ -211,7 +224,7 @@ class MaxClient:
             cached = self._scene_cache.get(pipe_name)
             if cached and (time.monotonic() - cached[1]) < self._scene_cache_ttl:
                 return cached[0]
-        if self._calls_in_flight(pipe_name):
+        if self._calls_in_flight(pipe_name) or self.abandoned_for(pipe_name) is not None:
             # Another chat is running a command there: do not queue behind it.
             cached = self._scene_cache.get(pipe_name)
             return cached[0] if cached else "<busy>"
@@ -450,6 +463,44 @@ class MaxClient:
                 self._pipe_locks[pipe_name] = lock
             return lock
 
+    def abandoned_for(self, pipe_name: str) -> float | None:
+        """Seconds a timed-out command has been running inside this Max, or None."""
+        with self._abandoned_lock:
+            t0 = self._abandoned.get(pipe_name)
+        return None if t0 is None else time.monotonic() - t0
+
+    def _abandon(self, pipe_name: str, handle: int) -> None:
+        """Hand a handle whose command is still running to a drain thread.
+
+        The thread reads (and discards) the late response, closes the handle and clears the
+        busy flag, so the next call knows 3ds Max is free again. The persistent handle slot is
+        emptied so later calls never read this stale response.
+        """
+        if self._pipe_handles.get(pipe_name) == handle:
+            self._pipe_handles.pop(pipe_name, None)
+        with self._abandoned_lock:
+            self._abandoned.setdefault(pipe_name, time.monotonic())
+
+        def drain() -> None:
+            buf = ctypes.create_string_buffer(65536)
+            got = bytearray()
+            try:
+                while True:
+                    n = wintypes.DWORD()
+                    ok = _kernel32.ReadFile(handle, buf, len(buf), ctypes.byref(n), None)
+                    if n.value:
+                        got.extend(buf.raw[: n.value])
+                        if b"\n" in got:
+                            break
+                    if not ok or n.value == 0:
+                        break
+            finally:
+                _kernel32.CloseHandle(handle)
+                with self._abandoned_lock:
+                    self._abandoned.pop(pipe_name, None)
+
+        threading.Thread(target=drain, name=f"mcp-drain-{pipe_name}", daemon=True).start()
+
     def _close_pipe_handle(self, pipe_name: str) -> None:
         handle = self._pipe_handles.pop(pipe_name, None)
         if handle not in (None, 0, _INVALID_HANDLE):
@@ -538,6 +589,10 @@ class MaxClient:
                 response_data = self._send_via_pipe(request, effective_timeout)
             except AmbiguousMaxInstanceError:
                 raise
+            except MaxStillBusyError:
+                # Max answered the pipe but is still busy: TCP would not help (and could
+                # reach another instance). Report it as is.
+                raise
             except (ConnectionError, TimeoutError) as exc:
                 if self._is_pinned():
                     # A specific Max was requested: never fall back to TCP, which
@@ -594,22 +649,36 @@ class MaxClient:
 
     def instance_usage(self, pipe_name: str) -> dict[str, Any]:
         """Calls in flight and seconds since the last call (from any chat) for one instance."""
+        abandoned = self.abandoned_for(pipe_name)
         with self._usage_lock:
             entry = self._usage.get(pipe_name)
             if not entry:
-                return {"busy": False, "last_call_s_ago": None}
-            return {
-                "busy": entry[0] > 0,
+                return {"busy": abandoned is not None, "last_call_s_ago": None}
+            out = {
+                "busy": entry[0] > 0 or abandoned is not None,
                 "last_call_s_ago": round(time.time() - entry[1], 1),
             }
+            if abandoned is not None:
+                out["running_s"] = round(abandoned, 1)
+            return out
 
     def _send_via_pipe_to(
         self, pipe_name: str, data: bytes, deadline: float, timeout: float
     ) -> bytes:
+        busy_for = self.abandoned_for(pipe_name)
+        if busy_for is not None:
+            raise MaxStillBusyError(
+                f"3ds Max is still executing a previous command (running for {busy_for:.0f}s); "
+                "it keeps running inside Max and will finish on its own. Do not resend it. "
+                "Wait and call again later (list_max_instances shows busy=true until it ends); "
+                "for long work use run_maxscript_job + job_status."
+            )
         lock = self._pipe_lock_for(pipe_name)
-        if not lock.acquire(timeout=max(0.001, deadline - time.perf_counter())):
-            raise TimeoutError(
-                f"3ds Max ({pipe_name}) is still busy with another request; waited {timeout}s."
+        wait = max(0.001, min(LOCK_WAIT_SECONDS, deadline - time.perf_counter()))
+        if not lock.acquire(timeout=wait):
+            raise MaxStillBusyError(
+                f"3ds Max ({pipe_name}) is busy with another request (another chat or call); "
+                f"waited {wait:.0f}s. Try again shortly."
             )
         try:
             for attempt in range(2):
@@ -640,17 +709,25 @@ class MaxClient:
 
                     response_data = bytearray()
                     buf = ctypes.create_string_buffer(65536)
+                    started = time.perf_counter()
                     while True:
                         if time.perf_counter() >= deadline:
-                            self._close_pipe_handle(pipe_name)
-                            raise TimeoutError(
-                                f"Timed out waiting for named pipe response after "
-                                f"{timeout}s."
+                            self._abandon(pipe_name, handle)
+                            raise MaxStillBusyError(
+                                f"No answer from 3ds Max within {timeout:.0f}s. The command is still "
+                                "running inside Max and will finish on its own (it is NOT cancelled). "
+                                "Do not resend it; wait, then check the result with a short query. "
+                                "Split long work into smaller calls or use run_maxscript_job."
                             )
 
+                        avail = wintypes.DWORD()
+                        if _kernel32.PeekNamedPipe(handle, None, 0, None, ctypes.byref(avail), None):
+                            if avail.value == 0:
+                                time.sleep(0.005 if time.perf_counter() - started < 0.5 else 0.02)
+                                continue
                         bytes_read = wintypes.DWORD()
                         ok = _kernel32.ReadFile(
-                            handle, buf, len(buf), ctypes.byref(bytes_read), None
+                            handle, buf, min(len(buf), max(1, avail.value or len(buf))), ctypes.byref(bytes_read), None
                         )
                         if bytes_read.value > 0:
                             response_data.extend(buf.raw[:bytes_read.value])

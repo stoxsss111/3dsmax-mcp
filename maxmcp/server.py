@@ -35,7 +35,10 @@ SERVER_INSTRUCTIONS = (
     "is closed. Tell the user instead of retrying in a loop.\n"
     "7. Calls to one 3ds Max run one at a time; different 3ds Max windows run in parallel. "
     "Keep a single MAXScript call under ~50 s (split long loops) - the desktop bridge gives up "
-    "after about 60 s."
+    "after about 60 s. A call that runs longer is answered after ~55 s with 'still running "
+    "inside Max' (it is NOT cancelled): do not resend it; wait and check with a short query. "
+    "For long work use run_maxscript_job (background queue inside Max) + job_status / "
+    "job_cancel; for many rays use build_ray_scene + raycast (C#, parallel)."
 )
 
 mcp = FastMCP("3dsmax-mcp", instructions=SERVER_INSTRUCTIONS)
@@ -47,6 +50,8 @@ if __name__ == "__main__" and __spec__ is not None:
 
 _READ_ONLY_TOOLS = {
     "get_bridge_status",
+    "job_status",
+    "raycast",
     "get_plugin_capabilities",
     "query_scene",
     "get_object_properties",
@@ -261,6 +266,7 @@ CORE_TOOL_MODULES = (
     "keyframes",
     "tool_test",
     "mainthread",
+    "fast",
 )
 
 SPECIALTY_TOOL_MODULES = (
