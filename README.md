@@ -1,4 +1,4 @@
-# 3dsmax-mcp
+# 3dsmax-mcp — fast multi-instance fork
 
 <p align="left">
   <picture>
@@ -7,30 +7,40 @@
   </picture>
 </p>
 
-Connect AI agents to Autodesk 3ds Max through the [Model Context Protocol](https://modelcontextprotocol.io).
-Ask in natural language; the agent creates objects, builds materials, inspects plugins with dedicated MCP tools instead of MAXScript/Python feedback loops.
+Connect AI agents (Claude, Codex, Cursor…) to Autodesk 3ds Max through the [Model Context Protocol](https://modelcontextprotocol.io).
+This fork of [cl0nazepamm/3dsmax-mcp](https://github.com/cl0nazepamm/3dsmax-mcp) is tuned for heavy production scenes: several Max windows at once, many chats in parallel, and millions of polygons without freezing Max.
 
-**Current release: 1.5.1** — see [CHANGELOG.md](docs/CHANGELOG.md).
+> 中文文档：[README.zh-CN.md](README.zh-CN.md) (upstream text, does not cover the fork additions)
 
-> 中文文档：[README.zh-CN.md](README.zh-CN.md)
+## What this fork adds
+
+| Area | What changed |
+|------|--------------|
+| **Several 3ds Max at once** | Each Max opens its own pipe `\\.\pipe\3dsmax-mcp-pid-<PID>`. `list_max_instances` shows every running Max (pid, scene, object count, busy, last call). Pass `max_instance` to any tool to route a call; calls to different Max instances run in parallel. See [Advanced — several instances](docs/ADVANCED.md#several-3ds-max-instances-at-once). |
+| **No hung sessions** | MAXScript calls time out after 55 s instead of blocking the chat. While the old call is still running, new calls fail fast with *still busy* (no silent TCP fallback to another Max), and the server recovers by itself once Max is free. |
+| **MaxFast (.NET, C#)** | `maxfast/` — a small C# assembly loaded into Max via `dotNet.loadAssembly`. Native-speed triangle export (0.8M tris in 0.5 s), BVH ray casting (100k rays in 0.13 s, same hits as `intersectRay`), bulk mesh building and background jobs on Max's UI timer. |
+| **Fast tools** | `run_maxscript_job`, `job_status`, `job_cancel`, `build_ray_scene`, `raycast`, `export_ground_tris` — long work runs in the background and is polled, so the MCP call never blocks Max. |
+| **Full results** | `execute_maxscript` returns the complete value of the last expression (arrays, structs), not a truncated print. `raw=True` keeps the old behaviour. |
+| **FStorm** | `convert_to_fstorm` — convert scene materials to FStorm. |
 
 ## Features
 
-- **151 MCP tools** — (87 in core profile) for scene reads, materials, modifiers, controllers, viewport capture, procedural graphs, and plugin workflows.
-- **Native Bridge** — only 2023-2027 versions.
-- **Introspection** — discover arbitrary Max classes for all kinds of automation and scripting purposes. 
-- **Bundled agent skill** — There is a bundled maxscript documentation if you want to create your own tools.
+- **160 MCP tools** for scene reads, materials, modifiers, controllers, viewport capture, procedural graphs, ray casting, background jobs and plugin workflows.
+- **Native Bridge** — 3ds Max 2023–2027.
+- **Introspection** — discover arbitrary Max classes for any kind of automation and scripting.
+- **Bundled agent skill** — MAXScript documentation for writing your own tools.
 
 ## Requirements
 
 - [Python 3.12+](https://www.python.org/)
 - [uv](https://docs.astral.sh/uv/)
 - Autodesk **3ds Max 2023–2027**
+- For MaxFast: .NET Framework 4.x (ships with Windows); `maxfast/build.bat` rebuilds the DLL with the built-in `csc.exe`
 
 ## Quick start
 
 ```powershell
-git clone https://github.com/cl0nazepamm/3dsmax-mcp.git
+git clone https://github.com/stoxsss111/3dsmax-mcp.git
 cd 3dsmax-mcp
 uv sync
 uv run python install.py
@@ -46,6 +56,13 @@ uv sync
 uv run python install.py
 ```
 
+**Pull upstream changes:**
+
+```powershell
+git remote add upstream https://github.com/cl0nazepamm/3dsmax-mcp.git
+git pull upstream master
+```
+
 ## Tools
 
 ### Bridge & session
@@ -55,6 +72,19 @@ uv run python install.py
 | `get_bridge_status` | Ping the MCP bridge when diagnosing connection errors |
 | `get_session_context` | Bundle bridge status, capabilities, scene summary, and selection in one call |
 | `get_plugin_capabilities` | Max version, renderers, installed plugins, and class counts |
+| `list_max_instances` | Every running 3ds Max: pid, scene, object count, busy state, seconds since last call |
+| `select_max_instance` | Bind this server process to one Max (prefer per-call `max_instance` when several chats share a PC) |
+
+### Fast native helpers (MaxFast)
+
+| Tool | Description |
+|------|-------------|
+| `run_maxscript_job` | Run a list of MAXScript tasks in the background on Max's UI timer; returns at once |
+| `job_status` | Progress, last results and errors of the background job |
+| `job_cancel` | Stop the background job |
+| `build_ray_scene` | Build a BVH over the given objects for fast ray casting |
+| `raycast` | Cast many rays at once (or straight down) → hit distance/height and object |
+| `export_ground_tris` | Export ground/lawn triangles to a compact binary file for out-of-Max processing |
 
 ### Scene query
 
@@ -124,6 +154,7 @@ uv run python install.py
 | `batch_replace_materials` | Batch material replacement |
 | `palette_laydown` | Fill Material Editor palette slots from a texture folder |
 | `smart_import` | Batch-import meshes from a folder with auto PBR assignment |
+| `convert_to_fstorm` | Convert scene materials to FStorm |
 
 ### Inspection
 
@@ -311,7 +342,7 @@ Experimental in-Max chat — see [Advanced configuration — Standalone chat](do
 
 | Tool | Description |
 |------|-------------|
-| `execute_maxscript` | Run MAXScript when no dedicated tool exists (respects safe mode) |
+| `execute_maxscript` | Run MAXScript when no dedicated tool exists (respects safe mode); returns the full value, 55 s limit |
 | `invoke_tool` | Call any registered tool from inside Max (testing) |
 | `run_tool_smoke` | Run live smoke cases against the bridge |
 
@@ -326,3 +357,4 @@ The installer builds an agent skill from `skills/3dsmax-mcp-dev/SKILL.md` with t
 - **[Advanced configuration](docs/ADVANCED.md)** — architecture, safe mode, tool profiles, native builds, standalone chat (WIP)
 - **[CHANGELOG.md](docs/CHANGELOG.md)** — release history
 - **[LICENSE](LICENSE)**
+- **Upstream:** [cl0nazepamm/3dsmax-mcp](https://github.com/cl0nazepamm/3dsmax-mcp)
